@@ -1,0 +1,143 @@
+version: "3.9"
+
+# Infrastructure SRB Haute Matsiatra — configuration de base (développement /
+# staging interne). Ce fichier seul publie des ports directement sur l'hôte ;
+# NE PAS l'utiliser tel quel en production exposée sur Internet.
+#
+# En production, lancer avec l'overlay TLS fourni :
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# → ajoute Traefik (HTTPS Let's Encrypt automatique) comme unique point
+#   d'entrée public et retire toute publication directe de port pour
+#   postgres/redis/keycloak/metabase (cf. docker-compose.prod.yml).
+#
+# Rappels :
+#   1. Remplir un fichier .env (voir .env.production.example) avec des
+#      valeurs FORTES pour tous les *_PASSWORD et SECRET — générées via
+#      ./scripts/generate_secrets.sh.
+#   2. Keycloak est provisionné ici mais N'EST PAS intégré au code applicatif
+#      (aucune référence dans app/). Ne pas le démarrer/exposer tant qu'un
+#      module d'intégration SSO n'existe pas réellement — cf. README.
+#   3. Keycloak, s'il est utilisé un jour, doit passer en mode `start`
+#      (déjà le cas ici) avec KC_HOSTNAME et HTTPS strict derrière le proxy.
+
+x-common-restart: &restart
+  restart: unless-stopped
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: srb_backend
+    <<: *restart
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             gunicorn app.main:app -k uvicorn.workers.UvicornWorker
+             --workers 4 --bind 0.0.0.0:8000 --timeout 60
+             --access-logfile - --error-logfile -"
+    volumes:
+      - rapports_data:/srv/app/storage/rapports
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: srb_postgres
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER manquant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD manquant}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB manquant}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # En prod : `expose: ["5432"]` au lieu de `ports:` (accès interne uniquement).
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: srb_redis
+    <<: *restart
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD manquant}"
+      - "--appendonly"
+      - "yes"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: srb_keycloak
+    <<: *restart
+    command:
+      - "start"
+      - "--optimized"
+      - "--http-enabled=true"
+      - "--proxy-headers=xforwarded"
+      - "--hostname-strict=false"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:?KEYCLOAK_ADMIN manquant}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD manquant}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-localhost}
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: srb_metabase
+    <<: *restart
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: 5432
+      MB_DB_USER: ${POSTGRES_USER}
+      MB_DB_PASS: ${POSTGRES_PASSWORD}
+      MB_DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - metabase_data:/metabase-data
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  postgres_data:
+  redis_data:
+  metabase_data:
+  rapports_data:

@@ -1,0 +1,84 @@
+# ==============================================================
+# Overlay PRODUCTION — TLS via Traefik (Let's Encrypt automatique)
+# ==============================================================
+# Usage :
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Ce fichier :
+#   - ajoute Traefik comme unique point d'entrée public (ports 80/443) ;
+#   - route https://${DOMAIN_API}  -> backend  (certificat Let's Encrypt auto)
+#   - route https://${DOMAIN_FRONT} -> frontend (certificat Let's Encrypt auto)
+#   - retire toute publication de port host pour postgres/redis/keycloak/
+#     metabase : ces services ne restent joignables que depuis le réseau
+#     interne docker (plus aucun accès direct depuis Internet, même via
+#     127.0.0.1, utile si le serveur est aussi accédé par d'autres services).
+#   - place le frontend (Nginx) et le backend (Gunicorn) derrière Traefik.
+#
+# Prérequis DNS : DOMAIN_API et DOMAIN_FRONT doivent pointer vers l'IP
+# publique du serveur AVANT le premier démarrage (validation ACME HTTP-01).
+
+services:
+  traefik:
+    image: traefik:v3.2
+    container_name: srb_traefik
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Redirection HTTP -> HTTPS systématique
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--certificatesresolvers.leresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.leresolver.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.leresolver.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.leresolver.acme.storage=/letsencrypt/acme.json"
+      # Retirer en debug uniquement :
+      - "--api.dashboard=false"
+      - "--log.level=WARN"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "traefik_certs:/letsencrypt"
+
+  backend:
+    ports: []            # supprime la publication 127.0.0.1:8000 -> exposé uniquement via Traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.srb-api.rule=Host(`${DOMAIN_API}`)"
+      - "traefik.http.routers.srb-api.entrypoints=websecure"
+      - "traefik.http.routers.srb-api.tls.certresolver=leresolver"
+      - "traefik.http.services.srb-api.loadbalancer.server.port=8000"
+
+  frontend:
+    build:
+      context: ../Systeme-de-pointage-et-BI_Front-main
+      dockerfile: Dockerfile
+    container_name: srb_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.srb-front.rule=Host(`${DOMAIN_FRONT}`)"
+      - "traefik.http.routers.srb-front.entrypoints=websecure"
+      - "traefik.http.routers.srb-front.tls.certresolver=leresolver"
+      - "traefik.http.services.srb-front.loadbalancer.server.port=80"
+
+  postgres:
+    ports: []             # plus de publication host:5432, accès interne docker uniquement
+
+  redis:
+    ports: []             # plus de publication host:6379
+
+  keycloak:
+    ports: []             # non intégré au code (cf. .env.production.example) : ne pas exposer
+
+  metabase:
+    ports: []             # accéder via un tunnel SSH ou une règle Traefik dédiée si besoin, pas de port public direct
+
+volumes:
+  traefik_certs:
