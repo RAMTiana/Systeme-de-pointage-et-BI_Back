@@ -63,6 +63,8 @@ class AgentOut(BaseModel):
     fonction: Optional[str] = None
     statut: StatutAgent
     consentement_facial: bool
+    empreinte_faciale_enregistree: bool = False
+    webauthn_enregistre: bool = False
     id_service: Optional[int] = None
     service: Optional[ServiceLight] = None
     date_creation: datetime

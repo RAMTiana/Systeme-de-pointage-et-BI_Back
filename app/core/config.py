@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     DEVICE_API_KEY: str = "change-me-device-key"
     JOB_API_KEY: str = "change-me-job-key"
 
+    # --- WebAuthn (biométrie d'appareil : Touch ID / Windows Hello / empreinte) ---
+    # RP_ID doit être le nom d'hôte (sans schéma ni port) du front-office ;
+    # ORIGIN doit être l'origine complète (schéma + hôte + port) depuis laquelle
+    # navigator.credentials.create()/.get() sont appelés.
+    WEBAUTHN_RP_ID: str = "localhost"
+    WEBAUTHN_RP_NAME: str = "SRB Haute Matsiatra"
+    WEBAUTHN_ORIGIN: str = "http://localhost:4200"
+
     # --- SMTP (alertes) ---
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 587

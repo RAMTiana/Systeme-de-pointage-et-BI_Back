@@ -13,6 +13,13 @@ Endpoints de gestion des agents (cf. cahier des charges — "Gestion des agents"
   POST   /agents/{id}/affectations                       — ajouter un rattachement secondaire
   DELETE /agents/{id}/affectations/{id_affectation}       — clôturer un rattachement (date_fin)
 
+  PUT    /agents/{id}/empreinte-faciale     — enregistrer l'empreinte faciale de référence
+  DELETE /agents/{id}/empreinte-faciale     — supprimer l'empreinte faciale
+
+  GET    /agents/{id}/webauthn/options      — options d'inscription biométrique WebAuthn
+  PUT    /agents/{id}/webauthn              — vérifier et enregistrer l'identifiant WebAuthn
+  DELETE /agents/{id}/webauthn              — supprimer l'identifiant WebAuthn
+
 Lecture ouverte à tout utilisateur actif ; écriture protégée par la
 permission RBAC `gerer_agents`.
 """
@@ -34,7 +41,8 @@ from app.schemas.agent import (
 )
 from app.schemas.common import Page
 from app.schemas.empreinte import EmpreinteFacialeCreate, EmpreinteFacialeOut
-from app.services import agent_service, empreinte_service
+from app.schemas.webauthn import IdentifiantWebAuthnOut, WebAuthnRegistrationCreate
+from app.services import agent_service, empreinte_service, webauthn_service
 
 router = APIRouter(prefix="/agents", tags=["Agents"])
 
@@ -176,3 +184,41 @@ def enregistrer_empreinte_faciale(
 def supprimer_empreinte_faciale(id_agent: int, db: Session = Depends(get_db)) -> None:
     agent = agent_service.get_by_id_or_404(db, id_agent)
     empreinte_service.supprimer(db, agent)
+
+
+# --------------------------------------------------------------------
+# Biométrie d'appareil WebAuthn (prérequis au pointage par mode 'webauthn')
+# --------------------------------------------------------------------
+
+@router.get(
+    "/{id_agent}/webauthn/options",
+    summary="Générer les options d'inscription WebAuthn (à transmettre à navigator.credentials.create())",
+    dependencies=_ECRITURE,
+)
+def obtenir_options_webauthn(id_agent: int, db: Session = Depends(get_db)) -> dict:
+    agent = agent_service.get_by_id_or_404(db, id_agent)
+    return webauthn_service.options_enrolement(agent)
+
+
+@router.put(
+    "/{id_agent}/webauthn",
+    response_model=IdentifiantWebAuthnOut,
+    summary="Vérifier et enregistrer l'identifiant WebAuthn (empreinte / Touch ID / Windows Hello) d'un agent",
+    dependencies=_ECRITURE,
+)
+def enregistrer_webauthn(
+    id_agent: int, payload: WebAuthnRegistrationCreate, db: Session = Depends(get_db)
+) -> IdentifiantWebAuthnOut:
+    agent = agent_service.get_by_id_or_404(db, id_agent)
+    return webauthn_service.enregistrer_credential(db, agent, payload.credential, payload.nom_appareil)
+
+
+@router.delete(
+    "/{id_agent}/webauthn",
+    status_code=204,
+    summary="Supprimer l'identifiant WebAuthn d'un agent (désactive le pointage biométrique)",
+    dependencies=_ECRITURE,
+)
+def supprimer_webauthn(id_agent: int, db: Session = Depends(get_db)) -> None:
+    agent = agent_service.get_by_id_or_404(db, id_agent)
+    webauthn_service.supprimer_credential(db, agent)

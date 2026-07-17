@@ -37,6 +37,7 @@ class ModePointage(str, enum.Enum):
     QR = "qr"
     BADGE = "badge"
     FACIAL = "facial"
+    WEBAUTHN = "webauthn"
 
 
 class StatutPointage(str, enum.Enum):

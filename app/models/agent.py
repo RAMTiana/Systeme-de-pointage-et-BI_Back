@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from app.models.service import Service
     from app.models.affectation import Affectation
     from app.models.biometrie import EmpreinteBiometrique
+    from app.models.identifiant_webauthn import IdentifiantWebAuthn
     from app.models.pointage import Pointage
     from app.models.anomalie import Anomalie
 
@@ -41,8 +42,23 @@ class Agent(Base):
     empreinte_biometrique: Mapped[Optional["EmpreinteBiometrique"]] = relationship(
         back_populates="agent", cascade="all, delete-orphan", uselist=False
     )
+    identifiant_webauthn: Mapped[Optional["IdentifiantWebAuthn"]] = relationship(
+        back_populates="agent", cascade="all, delete-orphan", uselist=False
+    )
     pointages: Mapped[List["Pointage"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     anomalies: Mapped[List["Anomalie"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Agent id={self.id_agent} matricule={self.matricule!r}>"
+
+    # ------------------------------------------------------------------
+    # État des moyens d'enrôlement biométrique (exposé en lecture via
+    # AgentOut pour piloter l'écran "Biométrie" du module Agents).
+    # ------------------------------------------------------------------
+    @property
+    def empreinte_faciale_enregistree(self) -> bool:
+        return self.empreinte_biometrique is not None
+
+    @property
+    def webauthn_enregistre(self) -> bool:
+        return self.identifiant_webauthn is not None

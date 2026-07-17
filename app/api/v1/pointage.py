@@ -4,6 +4,8 @@ Endpoints du module Pointage (Processus 1 du BPMN — "Pointage d'un agent") :
   POST /pointage/qr        — pointage par QR code dynamique
   POST /pointage/badge     — pointage par badge
   POST /pointage/facial    — pointage par reconnaissance faciale
+  GET  /pointage/webauthn/options — challenge d'authentification biométrique (WebAuthn)
+  POST /pointage/webauthn  — pointage par biométrie d'appareil (WebAuthn), vérifié cryptographiquement
   GET  /pointage           — historique paginé (filtres)
   GET  /pointage/{id}      — détail d'un pointage
 
@@ -83,6 +85,18 @@ def pointer_badge(payload: PointageQrBadgeCreate, db: Session = Depends(get_db))
 def pointer_facial(payload: PointageFacialCreate, db: Session = Depends(get_db)) -> PointageResultat:
     pointage, anomalie = pointage_service.pointer_facial(db, payload)
     return _vers_resultat(pointage, anomalie)
+
+
+@router.get(
+    "/webauthn/options",
+    summary="Générer les options d'authentification WebAuthn (à transmettre à navigator.credentials.get())",
+    dependencies=_DISPOSITIF,
+)
+def options_webauthn_pointage(
+    matricule: str = Query(description="Matricule de l'agent qui va pointer"),
+    db: Session = Depends(get_db),
+) -> dict:
+    return pointage_service.options_webauthn(db, matricule)
 
 
 @router.post(

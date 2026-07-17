@@ -28,7 +28,11 @@ _MATRICULE_DEJA_UTILISE = HTTPException(
 
 
 def _requete_de_base() -> Select:
-    return select(Agent).options(joinedload(Agent.service))
+    return select(Agent).options(
+        joinedload(Agent.service),
+        joinedload(Agent.empreinte_biometrique),
+        joinedload(Agent.identifiant_webauthn),
+    )
 
 
 def get_by_id(db: Session, id_agent: int) -> Optional[Agent]:

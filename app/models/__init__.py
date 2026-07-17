@@ -13,6 +13,7 @@ from app.models.service import Service  # noqa: F401
 from app.models.agent import Agent  # noqa: F401
 from app.models.affectation import Affectation  # noqa: F401
 from app.models.biometrie import EmpreinteBiometrique  # noqa: F401
+from app.models.identifiant_webauthn import IdentifiantWebAuthn  # noqa: F401
 from app.models.rbac import Role, Permission, role_permission  # noqa: F401
 from app.models.utilisateur import Utilisateur  # noqa: F401
 from app.models.code_verification import CodeVerification  # noqa: F401
@@ -31,6 +32,7 @@ __all__ = [
     "Agent",
     "Affectation",
     "EmpreinteBiometrique",
+    "IdentifiantWebAuthn",
     "Role",
     "Permission",
     "role_permission",

@@ -54,9 +54,9 @@ class PointageWebAuthnCreate(_IdentifiantAgent):
     """Pointage authentifié via la biométrie de l'appareil (Touch ID / Windows Hello / empreinte téléphone)."""
     type_pointage: TypePointage
     webauthn: dict = Field(
-        description="Assertion WebAuthn renvoyée par navigator.credentials.get() côté client "
-        "(id, rawId, clientDataJSON, authenticatorData, signature, userHandle). "
-        "TODO : vérifier cryptographiquement l'assertion contre une clé publique enregistrée."
+        description="Réponse JSON brute de navigator.credentials.get() (via @simplewebauthn/browser), "
+        "vérifiée cryptographiquement contre la clé publique WebAuthn enregistrée pour l'agent "
+        "(cf. PUT /agents/{id}/webauthn) — voir app/services/webauthn_service.py."
     )
 
 

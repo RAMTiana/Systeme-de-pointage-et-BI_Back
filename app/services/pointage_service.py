@@ -49,7 +49,7 @@ from app.models.enums import (
 from app.models.horaire_reference import HoraireReference
 from app.models.pointage import Pointage
 from app.schemas.pointage import PointageFacialCreate, PointageQrBadgeCreate, PointageWebAuthnCreate
-from app.services import anomalie_service, empreinte_service, journal_audit_service, parametre_service
+from app.services import anomalie_service, empreinte_service, journal_audit_service, parametre_service, webauthn_service
 
 _JOURS_PAR_INDEX = [
     JourSemaine.LUNDI,
@@ -67,7 +67,10 @@ _JOURS_PAR_INDEX = [
 # --------------------------------------------------------------------
 
 def _agent_ou_404(db: Session, matricule: Optional[str], id_agent: Optional[int]) -> Agent:
-    stmt = select(Agent).options(joinedload(Agent.empreinte_biometrique))
+    stmt = select(Agent).options(
+        joinedload(Agent.empreinte_biometrique),
+        joinedload(Agent.identifiant_webauthn),
+    )
     if id_agent is not None:
         stmt = stmt.where(Agent.id_agent == id_agent)
     else:
@@ -329,19 +332,29 @@ def lister_pointages(
 
 
 
+def options_webauthn(db: Session, matricule: str) -> dict:
+    """Génère le challenge d'authentification WebAuthn pour l'agent identifié par son matricule."""
+    agent = _agent_ou_404(db, matricule, None)
+    _verifier_agent_actif(agent)
+    return webauthn_service.options_pointage(agent)
+
+
 def pointer_webauthn(db: Session, payload: PointageWebAuthnCreate) -> Tuple[Pointage, Optional[Anomalie]]:
     """Pointage biométrique via WebAuthn (Touch ID / Windows Hello / empreinte téléphone).
 
-    TODO sécurité : vérifier cryptographiquement l'assertion (clientDataJSON, signature)
-    contre une clé publique WebAuthn préalablement enregistrée pour l'agent.
-    Pour l'instant on fait confiance au matricule + à la présence d'une assertion,
-    en marquant le pointage en mode FACIAL (l'enum PG ne contient pas encore 'webauthn').
+    L'assertion transmise par le client est vérifiée cryptographiquement
+    (signature + compteur anti-rejeu) contre la clé publique WebAuthn
+    préalablement enregistrée pour l'agent (cf. PUT /agents/{id}/webauthn et
+    app/services/webauthn_service.py). Le challenge attendu est celui généré
+    par GET /pointage/webauthn/options juste avant, conservé côté serveur.
     """
     agent = _agent_ou_404(db, payload.matricule, payload.id_agent)
     _verifier_agent_actif(agent)
 
-    if not payload.webauthn or not payload.webauthn.get("signature"):
-        raise HTTPException(status_code=400, detail="Assertion WebAuthn invalide.")
+    # Lève une HTTPException 401/403/400 si l'assertion, le challenge ou le
+    # credential enregistré ne concordent pas — aucun pointage n'est créé
+    # dans ce cas (identité non prouvée).
+    webauthn_service.verifier_assertion(db, agent, payload.webauthn)
 
     maintenant = datetime.now()
     doublon = _pointage_deja_enregistre_aujourdhui(db, agent.id_agent, payload.type_pointage, maintenant)
@@ -350,7 +363,7 @@ def pointer_webauthn(db: Session, payload: PointageWebAuthnCreate) -> Tuple[Poin
         id_agent=agent.id_agent,
         date_heure=maintenant,
         type_pointage=payload.type_pointage,
-        mode_pointage=ModePointage.FACIAL,
+        mode_pointage=ModePointage.WEBAUTHN,
         statut=StatutPointage.DOUBLON if doublon else StatutPointage.VALIDE,
     )
     pointage = _enregistrer_et_journaliser(db, agent, pointage)
