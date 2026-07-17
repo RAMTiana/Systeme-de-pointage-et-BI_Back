@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, func
+from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -30,6 +30,12 @@ class Pointage(Base):
         pg_enum(StatutPointage, "statut_pointage_enum"),
         default=StatutPointage.VALIDE, server_default=StatutPointage.VALIDE.value, nullable=False
     )
+
+    # Motif d'une sortie (NULL pour les entrées). Stocké en texte plutôt qu'en enum
+    # PostgreSQL pour rester extensible : les RH peuvent introduire de nouveaux motifs
+    # sans migration DDL — la validation reste faite côté API (schéma Pydantic MotifSortie).
+    motif_sortie: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    commentaire_motif: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
     # Relations
     agent: Mapped["Agent"] = relationship(back_populates="pointages")
