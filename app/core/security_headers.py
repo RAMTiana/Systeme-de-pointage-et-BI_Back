@@ -37,10 +37,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Content-Security-Policy",
             "default-src 'self'; "
             "img-src 'self' data: https:; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "script-src 'self' https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-            "connect-src 'self' https://cdn.jsdelivr.net data: https:; "
-            "font-src 'self' https://cdn.jsdelivr.net data:; "
             "frame-ancestors 'none'",
         )
         if settings.APP_ENV == "production":
