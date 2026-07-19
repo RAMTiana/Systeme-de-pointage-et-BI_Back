@@ -1,30 +1,11 @@
 """Schémas Pydantic — Module Pointage (Processus 1 du BPMN)."""
 from datetime import date, datetime
-from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.enums import ModePointage, StatutPointage, TypePointage
+from app.models.enums import ModePointage, MotifSortie, StatutPointage, TypePointage
 from app.schemas.agent import AgentOut
-
-
-class MotifSortie(str, Enum):
-    """
-    Motif associé à une sortie. Ne s'applique qu'aux pointages de type
-    TypePointage.SORTIE — laissé à NULL pour toutes les entrées.
-
-    `FIN_SERVICE` = sortie normale de fin de journée / fin de poste. Les autres
-    valeurs tracent une sortie exceptionnelle demandée par l'agent au moment
-    du pointage (visible ensuite dans les rapports RH).
-    """
-    FIN_SERVICE = "fin_service"
-    URGENCE = "urgence"
-    CAS_FAMILIAL = "cas_familial"
-    MEDICAL = "medical"
-    MISSION = "mission"
-    PAUSE = "pause"
-    AUTRE = "autre"
 
 
 class _IdentifiantAgent(BaseModel):
@@ -43,64 +24,82 @@ class _IdentifiantAgent(BaseModel):
         return self
 
 
-class _MotifSortieMixin(BaseModel):
+class _IdentifiantAgentOptionnel(BaseModel):
     """
-    Champs de motif partagés par tous les modes de pointage. Ils ne sont
-    autorisés que pour une sortie ; pour une entrée, ils DOIVENT rester nuls
-    (une entrée n'a pas de motif) — c'est ce que garantit `_verifier_motif`.
+    Variante sans contrainte : utilisée par le pointage facial, où
+    l'identité de l'agent peut soit être présumée (matricule/id_agent
+    fourni — vérification 1:1, comportement historique), soit être
+    entièrement déterminée par la reconnaissance faciale elle-même
+    (aucun identifiant fourni — identification 1:N sur l'ensemble des
+    empreintes enregistrées, cf. `pointage_service.identifier_par_visage`).
     """
+    matricule: Optional[str] = Field(
+        default=None,
+        description="Optionnel. Si fourni, la comparaison faciale se limite à cet agent "
+        "(vérification 1:1). Si omis, le visage capté est comparé à tous les agents "
+        "ayant une empreinte enregistrée pour déterminer l'identité (identification 1:N).",
+    )
+    id_agent: Optional[int] = None
+
+
+class _SortieDeclaree(BaseModel):
+    """
+    Ajoute au pointage la déclaration facultative du motif de sortie : le
+    poste de scan ne propose ce champ que lorsque `type_pointage = sortie`,
+    pour distinguer une sortie normale (fin de service) d'une sortie
+    exceptionnelle en cours de journée (urgence, cas familial, raison
+    médicale, autorisation de la hiérarchie...).
+
+    Mixin volontairement indépendant de l'identification de l'agent (voir
+    `_IdentifiantAgent` / `_IdentifiantAgentOptionnel`), pour pouvoir être
+    combiné avec l'une ou l'autre selon le mode de pointage.
+    """
+    type_pointage: TypePointage
     motif_sortie: Optional[MotifSortie] = Field(
         default=None,
-        description="Motif de la sortie (fin_service par défaut, ou sortie exceptionnelle : "
-        "urgence, cas_familial, medical, mission, pause, autre). Ignoré pour une entrée.",
+        description="Motif de la sortie (uniquement pertinent si type_pointage = 'sortie'). "
+        "Absent ou 'normale' pour une sortie de fin de service classique.",
     )
-    commentaire_motif: Optional[str] = Field(
+    commentaire: Optional[str] = Field(
         default=None,
-        max_length=200,
-        description="Précision libre saisie par l'agent de pointage (200 caractères max).",
+        max_length=500,
+        description="Précision libre sur le motif de sortie (obligatoire si motif_sortie = 'autre').",
     )
 
     @model_validator(mode="after")
-    def _verifier_motif(self) -> "_MotifSortieMixin":
-        type_pointage = getattr(self, "type_pointage", None)
-        if type_pointage == TypePointage.ENTREE:
-            if self.motif_sortie is not None or self.commentaire_motif:
-                raise ValueError("motif_sortie et commentaire_motif ne s'appliquent qu'à une sortie.")
-        elif type_pointage == TypePointage.SORTIE and self.motif_sortie is None:
-            # Valeur par défaut explicite côté back : une sortie sans motif = fin de service.
-            self.motif_sortie = MotifSortie.FIN_SERVICE
+    def _coherence_motif_sortie(self) -> "_SortieDeclaree":
+        if self.type_pointage == TypePointage.ENTREE:
+            if self.motif_sortie is not None:
+                raise ValueError("motif_sortie n'est applicable qu'à une sortie, pas à une entrée.")
+            return self
+        # type_pointage == SORTIE
+        if self.motif_sortie == MotifSortie.AUTRE and not (self.commentaire and self.commentaire.strip()):
+            raise ValueError("Un commentaire est requis lorsque le motif de sortie est 'autre'.")
         return self
 
 
-class PointageQrBadgeCreate(_MotifSortieMixin, _IdentifiantAgent):
-    type_pointage: TypePointage
+class PointageQrBadgeCreate(_IdentifiantAgent, _SortieDeclaree):
+    pass
 
 
-class PointageFacialCreate(_MotifSortieMixin, _IdentifiantAgent):
-    type_pointage: TypePointage
-    encodage_facial: Optional[List[float]] = Field(
-        default=None,
-        description="Vecteur de caractéristiques faciales déjà encodé côté client "
-        "(mode nominal, comparé à l'empreinte de référence de l'agent).",
+class PointageFacialCreate(_IdentifiantAgentOptionnel, _SortieDeclaree):
+    encodage_facial: List[float] = Field(
+        description="Vecteur de caractéristiques faciales (128-D, face-api.js) calculé côté client "
+        "à l'instant du pointage. Obligatoire dans tous les cas. Si matricule/id_agent est fourni, "
+        "utilisé pour une vérification 1:1 contre l'empreinte de cet agent (cf. "
+        "pointage_service._identite_verifiee). Si aucun identifiant n'est fourni, utilisé pour une "
+        "identification 1:N contre l'ensemble des empreintes enregistrées (cf. "
+        "pointage_service.identifier_par_visage) — aucune identité n'est présumée sans ce vecteur.",
     )
     image_base64: Optional[str] = Field(
         default=None,
-        description="Image JPEG/PNG capturée côté client, encodée en base64. Utilisée quand "
-        "le client ne calcule pas d'embedding (WebRTC + navigateur). L'identité est alors "
-        "vérifiée uniquement via le matricule + consentement — TODO : intégrer une lib de "
-        "reconnaissance (face_recognition/InsightFace) pour un vrai match serveur.",
+        description="Photo JPEG/PNG capturée côté client, encodée en base64 — conservée uniquement à "
+        "des fins de traçabilité/preuve, jamais utilisée comme substitut à la comparaison biométrique.",
     )
 
-    @model_validator(mode="after")
-    def _preuve_faciale_requise(self) -> "PointageFacialCreate":
-        if not self.encodage_facial and not self.image_base64:
-            raise ValueError("encodage_facial ou image_base64 doit être fourni.")
-        return self
 
-
-class PointageWebAuthnCreate(_MotifSortieMixin, _IdentifiantAgent):
+class PointageWebAuthnCreate(_IdentifiantAgent, _SortieDeclaree):
     """Pointage authentifié via la biométrie de l'appareil (Touch ID / Windows Hello / empreinte téléphone)."""
-    type_pointage: TypePointage
     webauthn: dict = Field(
         description="Réponse JSON brute de navigator.credentials.get() (via @simplewebauthn/browser), "
         "vérifiée cryptographiquement contre la clé publique WebAuthn enregistrée pour l'agent "
@@ -116,7 +115,7 @@ class PointageOut(BaseModel):
     mode_pointage: ModePointage
     statut: StatutPointage
     motif_sortie: Optional[MotifSortie] = None
-    commentaire_motif: Optional[str] = None
+    commentaire: Optional[str] = None
     agent: Optional[AgentOut] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -137,6 +136,5 @@ class PointageFiltre(BaseModel):
     id_service: Optional[int] = None
     type_pointage: Optional[TypePointage] = None
     statut: Optional[StatutPointage] = None
-    motif_sortie: Optional[MotifSortie] = None
     date_debut: Optional[date] = None
     date_fin: Optional[date] = None

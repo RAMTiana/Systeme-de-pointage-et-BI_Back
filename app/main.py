@@ -4,12 +4,18 @@ Point d'entrée de l'application FastAPI — SRB Haute Matsiatra.
 Lancement en local :
     uvicorn app.main:app --reload
 """
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.v1 import api_router
 from app.core.config import settings
+from app.core.redis_client import get_redis
 from app.core.security_headers import SecurityHeadersMiddleware
+
+logger = logging.getLogger(__name__)
 
 # En production, Swagger/Redoc/openapi.json sont désactivés (surface
 # d'attaque inutile + fuite de la structure interne de l'API). C'était déjà
@@ -42,11 +48,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Gestionnaire d'erreurs global ---
+# Sans ceci, toute exception non gérée (ex. Redis/Postgres injoignable) est
+# renvoyée par le middleware d'erreur par défaut de Starlette AVANT que
+# CORSMiddleware ait pu ajouter ses en-têtes à la réponse. Le navigateur
+# masque alors la vraie erreur 500 derrière un message "bloqué par CORS",
+# ce qui rend le diagnostic très difficile côté frontend.
+# En interceptant l'exception ici, la réponse redescend normalement à
+# travers CORSMiddleware (qui ajoute bien Access-Control-Allow-Origin),
+# et le message reste exploitable sans fuiter de détails internes.
+@app.exception_handler(Exception)
+async def gestionnaire_erreurs_non_gerees(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Erreur non gérée sur %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Erreur interne du serveur. Veuillez réessayer plus tard."},
+    )
+
+
 # --- Routeurs métier (branchés au fur et à mesure des modules) ---
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 # Tous les modules du cahier des charges sont livrés. Après `alembic upgrade
 # head`, penser à `python -m scripts.seed_reference_data` (cf. README §15)
 # avant toute création de compte utilisateur.
+
+
+@app.on_event("startup")
+def verifier_redis_au_demarrage() -> None:
+    """
+    Vérifie que Redis est joignable au démarrage.
+
+    Redis est requis pour la révocation des tokens JWT, le verrouillage de
+    compte et le rate limiting (cf. app/core/redis_client.py). Sans cette
+    vérification, une indisponibilité de Redis ne se manifeste qu'au premier
+    appel authentifié, sous la forme d'une erreur 500 qui ressemble à tort à
+    un problème de CORS côté frontend (cf. app/main.py, gestionnaire
+    d'erreurs global). On préfère donc échouer bruyamment, tout de suite,
+    avec un message explicite.
+    """
+    try:
+        get_redis().ping()
+    except Exception as exc:  # noqa: BLE001 — on veut juste logguer, pas planter le boot
+        logger.warning(
+            "Redis injoignable (%s) — REDIS_URL=%s. "
+            "L'authentification, le rate limiting et le verrouillage de "
+            "compte échoueront tant que Redis n'est pas démarré "
+            "(ex. `redis-server` ou `docker compose up -d redis`).",
+            exc,
+            settings.REDIS_URL,
+        )
+    else:
+        logger.info("Connexion Redis OK (%s).", settings.REDIS_URL)
 
 
 @app.get("/", tags=["Santé"])

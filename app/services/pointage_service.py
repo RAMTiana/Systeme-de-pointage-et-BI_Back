@@ -41,15 +41,44 @@ from app.models.anomalie import Anomalie
 from app.models.enums import (
     JourSemaine,
     ModePointage,
+    MotifSortie,
     StatutAgent,
+    StatutJustification,
     StatutPointage,
     TypeAnomalie,
     TypePointage,
 )
 from app.models.horaire_reference import HoraireReference
+from app.models.justificatif import Justificatif
 from app.models.pointage import Pointage
 from app.schemas.pointage import PointageFacialCreate, PointageQrBadgeCreate, PointageWebAuthnCreate
 from app.services import anomalie_service, empreinte_service, journal_audit_service, parametre_service, webauthn_service
+
+# Motifs de sortie considérés comme exceptionnels (donc pas une simple sortie
+# de fin de service) : un départ avant l'heure de référence pour l'un de ces
+# motifs ne doit pas rester une anomalie "en attente" à traiter par la
+# secrétaire — elle est auto-justifiée à la volée, cf. `_detecter_anomalie_horaire`.
+_MOTIFS_SORTIE_EXCEPTIONNELS = {
+    MotifSortie.URGENCE,
+    MotifSortie.RAISON_FAMILIALE,
+    MotifSortie.RAISON_MEDICALE,
+    MotifSortie.AUTORISATION_HIERARCHIE,
+    MotifSortie.AUTRE,
+}
+
+_LIBELLES_MOTIF_SORTIE = {
+    MotifSortie.URGENCE: "Sortie urgente déclarée au poste de pointage",
+    MotifSortie.RAISON_FAMILIALE: "Sortie pour cas familial déclarée au poste de pointage",
+    MotifSortie.RAISON_MEDICALE: "Sortie pour raison médicale déclarée au poste de pointage",
+    MotifSortie.AUTORISATION_HIERARCHIE: "Sortie autorisée par la hiérarchie, déclarée au poste de pointage",
+    MotifSortie.AUTRE: "Sortie exceptionnelle déclarée au poste de pointage",
+}
+
+# Écart minimal exigé, en identification 1:N, entre la distance du meilleur
+# candidat et celle du deuxième meilleur, pour trancher sans ambiguïté entre
+# deux agents dont les visages se ressemblent. Valeur empirique modeste :
+# à affiner selon les retours terrain une fois le mode 1:N en usage réel.
+_MARGE_AMBIGUITE_FACIALE = 0.05
 
 _JOURS_PAR_INDEX = [
     JourSemaine.LUNDI,
@@ -126,6 +155,68 @@ def _identite_verifiee(db: Session, agent: Agent, vecteur_capture: List[float]) 
     return distance <= seuil
 
 
+def identifier_par_visage(db: Session, vecteur_capture: List[float]) -> Agent:
+    """
+    Identification 1:N : compare le vecteur facial capté à l'empreinte de
+    TOUS les agents actifs ayant consenti à la reconnaissance faciale et
+    disposant d'une empreinte enregistrée, et retourne l'agent le plus
+    proche — à condition que cette distance minimale reste sous le seuil
+    configuré ET qu'elle se détache clairement du deuxième meilleur candidat
+    (cf. `_MARGE_AMBIGUITE_FACIALE` ci-dessous), pour éviter de trancher à
+    tort entre deux agents dont les empreintes sont proches.
+
+    Utilisée quand le poste de pointage facial n'a pas fait saisir de
+    matricule au préalable (cf. PointageFacialCreate, matricule/id_agent
+    optionnels) : c'est la capture elle-même qui détermine l'identité,
+    contrairement à `_identite_verifiee` qui vérifie une identité déjà
+    présumée (1:1).
+    """
+    stmt = select(Agent).where(
+        Agent.statut == StatutAgent.ACTIF,
+        Agent.consentement_facial.is_(True),
+    ).options(joinedload(Agent.empreinte_biometrique))
+    agents = db.execute(stmt).unique().scalars().all()
+
+    seuil = parametre_service.get_float(db, "seuil_distance_faciale", default=0.6)
+
+    candidats: List[Tuple[Agent, float]] = []
+    for agent in agents:
+        if agent.empreinte_biometrique is None:
+            continue
+        empreinte_reference = empreinte_service.decoder_vecteur(agent.empreinte_biometrique.encodage_facial)
+        try:
+            distance = _distance_euclidienne(vecteur_capture, empreinte_reference)
+        except HTTPException:
+            continue  # empreinte de dimension incompatible : on l'ignore plutôt que de planter la recherche
+        candidats.append((agent, distance))
+
+    if not candidats:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Identité non vérifiée : aucun agent correspondant au visage capté.",
+        )
+
+    candidats.sort(key=lambda c: c[1])
+    meilleur_agent, meilleure_distance = candidats[0]
+
+    if meilleure_distance > seuil:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Identité non vérifiée : aucun agent correspondant au visage capté.",
+        )
+
+    if len(candidats) > 1:
+        _, deuxieme_distance = candidats[1]
+        if deuxieme_distance - meilleure_distance < _MARGE_AMBIGUITE_FACIALE:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Identité ambiguë : plusieurs agents correspondent de façon trop proche au visage "
+                "capté. Merci de réessayer (meilleur cadrage/éclairage) ou de pointer par matricule.",
+            )
+
+    return meilleur_agent
+
+
 # --------------------------------------------------------------------
 # Calcul d'anomalie horaire (étape 14) — retard / départ anticipé
 # --------------------------------------------------------------------
@@ -168,6 +259,36 @@ def _detecter_anomalie_horaire(db: Session, agent: Agent, pointage: Pointage) ->
     db.commit()
     db.refresh(anomalie)
 
+    # Sortie exceptionnelle déclarée (urgence, cas familial, raison médicale,
+    # autorisation de la hiérarchie...) : le départ anticipé qui en résulte est
+    # légitime et déjà expliqué par l'agent au poste de pointage. On l'auto-
+    # justifie immédiatement (statut JUSTIFIEE, sans alerte ni file d'attente
+    # pour la secrétaire), tout en conservant la traçabilité complète (motif +
+    # commentaire éventuel dans le justificatif).
+    if (
+        type_anomalie == TypeAnomalie.DEPART_ANTICIPE
+        and pointage.motif_sortie is not None
+        and pointage.motif_sortie in _MOTIFS_SORTIE_EXCEPTIONNELS
+    ):
+        motif_libelle = _LIBELLES_MOTIF_SORTIE[pointage.motif_sortie]
+        if pointage.commentaire:
+            motif_libelle = f"{motif_libelle} — {pointage.commentaire}"
+        justificatif = Justificatif(id_anomalie=anomalie.id_anomalie, motif=motif_libelle)
+        db.add(justificatif)
+        anomalie.statut_justification = StatutJustification.JUSTIFIEE
+        db.commit()
+        db.refresh(anomalie)
+        journal_audit_service.log_action(
+            db,
+            id_utilisateur=None,
+            action="sortie_exceptionnelle_auto_justifiee",
+            details=(
+                f"agent={agent.matricule} anomalie={anomalie.id_anomalie} "
+                f"motif_sortie={pointage.motif_sortie.value}"
+            ),
+        )
+        return anomalie
+
     # Matérialise la suite du Processus 3 (seuils/récidive, alerte à la
     # hiérarchie) dans la même transaction applicative, cf. anomalie_service.
     anomalie_service.qualifier_et_alerter(db, anomalie)
@@ -182,14 +303,17 @@ def _enregistrer_et_journaliser(db: Session, agent: Agent, pointage: Pointage) -
     db.add(pointage)
     db.commit()
     db.refresh(pointage)
+    details = (
+        f"agent={agent.matricule} type={pointage.type_pointage.value} "
+        f"mode={pointage.mode_pointage.value} statut={pointage.statut.value}"
+    )
+    if pointage.motif_sortie is not None:
+        details += f" motif_sortie={pointage.motif_sortie.value}"
     journal_audit_service.log_action(
         db,
         id_utilisateur=None,
         action="pointage",
-        details=(
-            f"agent={agent.matricule} type={pointage.type_pointage.value} "
-            f"mode={pointage.mode_pointage.value} statut={pointage.statut.value}"
-        ),
+        details=details,
     )
     return pointage
 
@@ -213,6 +337,8 @@ def pointer_qr_badge(
         type_pointage=payload.type_pointage,
         mode_pointage=mode,
         statut=StatutPointage.DOUBLON if doublon else StatutPointage.VALIDE,
+        motif_sortie=payload.motif_sortie if payload.type_pointage == TypePointage.SORTIE else None,
+        commentaire=payload.commentaire if payload.type_pointage == TypePointage.SORTIE else None,
     )
     pointage = _enregistrer_et_journaliser(db, agent, pointage)
 
@@ -227,39 +353,44 @@ def pointer_qr_badge(
 
 
 def pointer_facial(db: Session, payload: PointageFacialCreate) -> Tuple[Pointage, Optional[Anomalie]]:
-    agent = _agent_ou_404(db, payload.matricule, payload.id_agent)
-    _verifier_agent_actif(agent)
+    identifiant_fourni = bool(payload.matricule) or payload.id_agent is not None
 
-    if not agent.consentement_facial or agent.empreinte_biometrique is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Pointage par reconnaissance faciale indisponible pour cet agent "
-            "(consentement non donné ou empreinte non enregistrée).",
-        )
+    if identifiant_fourni:
+        # Vérification 1:1 (comportement historique) : l'identité est
+        # présumée par le matricule/id_agent transmis, puis confirmée par
+        # comparaison biométrique contre l'empreinte de CET agent uniquement.
+        agent = _agent_ou_404(db, payload.matricule, payload.id_agent)
+        _verifier_agent_actif(agent)
+
+        if not agent.consentement_facial or agent.empreinte_biometrique is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Pointage par reconnaissance faciale indisponible pour cet agent "
+                "(consentement non donné ou empreinte non enregistrée).",
+            )
+
+        identite_ok = _identite_verifiee(db, agent, payload.encodage_facial)
+        if not identite_ok:
+            pointage_rejete = Pointage(
+                id_agent=agent.id_agent,
+                date_heure=datetime.now(),
+                type_pointage=payload.type_pointage,
+                mode_pointage=ModePointage.FACIAL,
+                statut=StatutPointage.REJETE,
+            )
+            _enregistrer_et_journaliser(db, agent, pointage_rejete)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Identité non vérifiée : le visage capté ne correspond pas à l'empreinte enregistrée.",
+            )
+    else:
+        # Identification 1:N : aucun matricule saisi au poste de pointage —
+        # c'est la capture faciale elle-même qui détermine qui est l'agent,
+        # par comparaison à l'ensemble des empreintes enregistrées.
+        agent = identifier_par_visage(db, payload.encodage_facial)
+        _verifier_agent_actif(agent)
 
     maintenant = datetime.now()
-    # Deux modes : embedding pré-calculé côté client (nominal), ou image brute
-    # (fallback navigateur sans face-api.js). En mode image, on fait confiance au
-    # matricule + consentement enregistré, faute de reco serveur. TODO : intégrer.
-    if payload.encodage_facial:
-        identite_ok = _identite_verifiee(db, agent, payload.encodage_facial)
-    else:
-        identite_ok = True  # fallback image_base64 : identité présumée par matricule
-
-    if not identite_ok:
-        pointage = Pointage(
-            id_agent=agent.id_agent,
-            date_heure=maintenant,
-            type_pointage=payload.type_pointage,
-            mode_pointage=ModePointage.FACIAL,
-            statut=StatutPointage.REJETE,
-        )
-        _enregistrer_et_journaliser(db, agent, pointage)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Identité non vérifiée : le visage capté ne correspond pas à l'empreinte enregistrée.",
-        )
-
     doublon = _pointage_deja_enregistre_aujourdhui(db, agent.id_agent, payload.type_pointage, maintenant)
     pointage = Pointage(
         id_agent=agent.id_agent,
@@ -267,6 +398,8 @@ def pointer_facial(db: Session, payload: PointageFacialCreate) -> Tuple[Pointage
         type_pointage=payload.type_pointage,
         mode_pointage=ModePointage.FACIAL,
         statut=StatutPointage.DOUBLON if doublon else StatutPointage.VALIDE,
+        motif_sortie=payload.motif_sortie if payload.type_pointage == TypePointage.SORTIE else None,
+        commentaire=payload.commentaire if payload.type_pointage == TypePointage.SORTIE else None,
     )
     pointage = _enregistrer_et_journaliser(db, agent, pointage)
 
@@ -365,6 +498,8 @@ def pointer_webauthn(db: Session, payload: PointageWebAuthnCreate) -> Tuple[Poin
         type_pointage=payload.type_pointage,
         mode_pointage=ModePointage.WEBAUTHN,
         statut=StatutPointage.DOUBLON if doublon else StatutPointage.VALIDE,
+        motif_sortie=payload.motif_sortie if payload.type_pointage == TypePointage.SORTIE else None,
+        commentaire=payload.commentaire if payload.type_pointage == TypePointage.SORTIE else None,
     )
     pointage = _enregistrer_et_journaliser(db, agent, pointage)
 

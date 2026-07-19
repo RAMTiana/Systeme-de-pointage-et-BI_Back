@@ -46,6 +46,23 @@ class StatutPointage(str, enum.Enum):
     DOUBLON = "doublon"
 
 
+class MotifSortie(str, enum.Enum):
+    """
+    Motif déclaré par l'agent au poste de scan pour une sortie (étape ajoutée
+    au Processus 1 du BPMN) : au-delà de la sortie normale de fin de service,
+    le poste de pointage doit permettre de tracer les sorties exceptionnelles
+    en cours de journée (urgence, cas familial, raison médicale...), afin
+    qu'elles ne soient pas traitées comme un simple "départ anticipé" à
+    justifier a posteriori — cf. `pointage_service._detecter_anomalie_horaire`.
+    """
+    NORMALE = "normale"
+    URGENCE = "urgence"
+    RAISON_FAMILIALE = "raison_familiale"
+    RAISON_MEDICALE = "raison_medicale"
+    AUTORISATION_HIERARCHIE = "autorisation_hierarchie"
+    AUTRE = "autre"
+
+
 class TypeAnomalie(str, enum.Enum):
     RETARD = "retard"
     ABSENCE = "absence"

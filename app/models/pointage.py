@@ -1,11 +1,11 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
-from app.models.enums import ModePointage, StatutPointage, TypePointage, pg_enum
+from app.models.enums import ModePointage, MotifSortie, StatutPointage, TypePointage, pg_enum
 
 if TYPE_CHECKING:
     from app.models.agent import Agent
@@ -30,12 +30,17 @@ class Pointage(Base):
         pg_enum(StatutPointage, "statut_pointage_enum"),
         default=StatutPointage.VALIDE, server_default=StatutPointage.VALIDE.value, nullable=False
     )
-
-    # Motif d'une sortie (NULL pour les entrées). Stocké en texte plutôt qu'en enum
-    # PostgreSQL pour rester extensible : les RH peuvent introduire de nouveaux motifs
-    # sans migration DDL — la validation reste faite côté API (schéma Pydantic MotifSortie).
-    motif_sortie: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    commentaire_motif: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    # Motif déclaré au poste de scan pour une SORTIE (NULL pour une ENTREE) :
+    # permet de distinguer une sortie normale de fin de service d'une sortie
+    # exceptionnelle en cours de journée (urgence, cas familial, raison
+    # médicale...), cf. app.models.enums.MotifSortie.
+    motif_sortie: Mapped[Optional[MotifSortie]] = mapped_column(
+        pg_enum(MotifSortie, "motif_sortie_enum"), nullable=True
+    )
+    # Précision libre saisie par l'agent (obligatoire si motif_sortie = 'autre'),
+    # affichée dans l'historique et reprise automatiquement dans le
+    # justificatif si la sortie déclenche un départ anticipé.
+    commentaire: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relations
     agent: Mapped["Agent"] = relationship(back_populates="pointages")
