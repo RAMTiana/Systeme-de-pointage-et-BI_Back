@@ -38,7 +38,7 @@ from app.models.enums import JourSemaine, StatutAgent, StatutJustification, Stat
 from app.models.horaire_reference import HoraireReference
 from app.models.justificatif import Justificatif
 from app.models.pointage import Pointage
-from app.services import alerte_service, journal_audit_service, parametre_service
+from app.services import alerte_service, horaire_service, journal_audit_service, parametre_service
 
 _JOURS_PAR_INDEX = [
     JourSemaine.LUNDI,
@@ -260,30 +260,47 @@ def detecter_absences(db: Session, jour: Optional[date_] = None) -> List[Anomali
     """
     Job planifié (à exécuter en fin de journée ou tôt le lendemain, via un
     ordonnanceur externe — cf. pattern Timer Start Event du Processus 4) :
-    pour chaque service ayant un horaire de référence défini le jour donné,
-    consigne une anomalie 'absence' pour tout agent actif de ce service
-    n'ayant enregistré aucun pointage d'entrée valide ce jour-là.
+    consigne une anomalie 'absence' pour tout agent actif n'ayant enregistré
+    aucun pointage d'entrée valide ce jour-là, dans les services contrôlés
+    ce jour-là.
 
-    Un service sans horaire de référence pour ce jour est considéré comme
-    non travaillé (ex. week-end) et n'est pas contrôlé — même règle que la
-    détection du retard au pointage.
+    Un service est contrôlé un jour donné si un `HoraireReference` explicite
+    y est défini, ou — à défaut — si ce jour fait partie des jours ouvrés
+    par défaut (lundi-vendredi), auquel cas l'horaire standard 8h-17h
+    s'applique (cf. `horaire_service.horaire_effectif`). Un service sans
+    horaire de référence un jour de week-end est considéré comme non
+    travaillé et n'est pas contrôlé — même règle que la détection du retard
+    au pointage.
     """
     jour = jour or (date_.today() - timedelta(days=1))
     jour_semaine = _JOURS_PAR_INDEX[jour.weekday()]
 
-    stmt_services = select(HoraireReference.id_service).where(
-        HoraireReference.jour_semaine == jour_semaine,
-        HoraireReference.id_service.is_not(None),
-    ).distinct()
-    ids_services = [row for row in db.execute(stmt_services).scalars().all()]
+    if jour_semaine in horaire_service.JOURS_OUVRES_PAR_DEFAUT:
+        # Jour ouvré par défaut (lundi-vendredi) : tous les services sont
+        # contrôlés, ceux sans `HoraireReference` explicite héritant de
+        # l'horaire standard 8h-17h (cf. horaire_service.horaire_effectif),
+        # cohérent avec la détection de retard au pointage.
+        stmt_agents = select(Agent).where(
+            Agent.statut == StatutAgent.ACTIF,
+            Agent.id_service.is_not(None),
+        )
+    else:
+        # Week-end : seuls les services ayant explicitement défini un
+        # horaire de référence ce jour-là sont contrôlés.
+        stmt_services = select(HoraireReference.id_service).where(
+            HoraireReference.jour_semaine == jour_semaine,
+            HoraireReference.id_service.is_not(None),
+        ).distinct()
+        ids_services = [row for row in db.execute(stmt_services).scalars().all()]
 
-    if not ids_services:
-        return []
+        if not ids_services:
+            return []
 
-    stmt_agents = select(Agent).where(
-        Agent.id_service.in_(ids_services),
-        Agent.statut == StatutAgent.ACTIF,
-    )
+        stmt_agents = select(Agent).where(
+            Agent.id_service.in_(ids_services),
+            Agent.statut == StatutAgent.ACTIF,
+        )
+
     agents = list(db.execute(stmt_agents).scalars().all())
 
     anomalies_creees: List[Anomalie] = []

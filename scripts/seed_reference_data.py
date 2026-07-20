@@ -15,10 +15,13 @@ Couvre :
     `permission` indépendamment, sans les relier) ; le choix retenu ici
     découle directement des lanes BPMN et du chapitre IV du cahier des
     charges (cf. commentaires ci-dessous) ;
-  - les 5 paramètres système de la section 5, plus deux paramètres apparus
+  - les 5 paramètres système de la section 5, plus quatre paramètres apparus
     au fil de l'implémentation et documentés dans leur module respectif :
-    `seuil_distance_faciale` (module Pointage, reconnaissance faciale) et
-    `telephone_hierarchie` (module Anomalies, alertes SMS).
+    `seuil_distance_faciale` (module Pointage, reconnaissance faciale),
+    `telephone_hierarchie` (module Anomalies, alertes SMS), et
+    `heure_debut_travail` / `heure_fin_travail` (horaire standard 8h-17h
+    utilisé en secours par `horaire_service` quand un service n'a pas
+    d'horaire de référence explicite, cf. module Anomalies).
 
 Idempotent : peut être rejoué sans risque sur une base déjà peuplée.
   - Rôles/permissions : créés s'ils manquent ; la description d'une
@@ -110,6 +113,12 @@ PARAMETRES: List[Tuple[str, str, str]] = [
      "Nombre de retards sur la période glissante déclenchant une alerte"),
     ("periode_glissante_jours", "30",
      "Fenêtre en jours utilisée pour le calcul de la récidive"),
+    ("heure_debut_travail", "08:00",
+     "Heure d'entrée standard (format HH:MM), appliquée aux services sans "
+     "horaire de référence spécifique pour le calcul des retards/absences"),
+    ("heure_fin_travail", "17:00",
+     "Heure de fin de service standard (format HH:MM), appliquée aux services "
+     "sans horaire de référence spécifique pour le calcul des départs anticipés"),
     ("code_verification_expiration_minutes", "15",
      "Durée de validité d'un code de réinitialisation de mot de passe"),
     ("code_verification_tentatives_max", "5",

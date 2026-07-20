@@ -48,11 +48,17 @@ from app.models.enums import (
     TypeAnomalie,
     TypePointage,
 )
-from app.models.horaire_reference import HoraireReference
 from app.models.justificatif import Justificatif
 from app.models.pointage import Pointage
 from app.schemas.pointage import PointageFacialCreate, PointageQrBadgeCreate, PointageWebAuthnCreate
-from app.services import anomalie_service, empreinte_service, journal_audit_service, parametre_service, webauthn_service
+from app.services import (
+    anomalie_service,
+    empreinte_service,
+    horaire_service,
+    journal_audit_service,
+    parametre_service,
+    webauthn_service,
+)
 
 # Motifs de sortie considérés comme exceptionnels (donc pas une simple sortie
 # de fin de service) : un départ avant l'heure de référence pour l'un de ces
@@ -89,6 +95,8 @@ _JOURS_PAR_INDEX = [
     JourSemaine.SAMEDI,
     JourSemaine.DIMANCHE,
 ]
+
+
 
 
 # --------------------------------------------------------------------
@@ -268,24 +276,21 @@ def _detecter_anomalie_horaire(db: Session, agent: Agent, pointage: Pointage) ->
         return None  # pas de service principal -> pas d'horaire de référence exploitable
 
     jour = _JOURS_PAR_INDEX[pointage.date_heure.weekday()]
-    stmt = select(HoraireReference).where(
-        HoraireReference.id_service == agent.id_service,
-        HoraireReference.jour_semaine == jour,
-    )
-    horaire = db.execute(stmt).scalar_one_or_none()
+    horaire = horaire_service.horaire_effectif(db, agent.id_service, jour)
     if horaire is None:
-        return None  # aucun horaire de référence défini pour ce service/jour
+        return None  # jour non travaillé (ni horaire configuré, ni jour ouvré par défaut)
+    heure_debut, heure_fin = horaire
 
     heure_pointage = pointage.date_heure.time()
     type_anomalie: Optional[TypeAnomalie] = None
 
     if pointage.type_pointage == TypePointage.ENTREE:
         seuil_minutes = parametre_service.get_int(db, "seuil_retard_minutes", default=15)
-        limite = _ajouter_minutes(horaire.heure_debut, seuil_minutes)
+        limite = _ajouter_minutes(heure_debut, seuil_minutes)
         if heure_pointage > limite:
             type_anomalie = TypeAnomalie.RETARD
     else:  # SORTIE
-        if heure_pointage < horaire.heure_fin:
+        if heure_pointage < heure_fin:
             type_anomalie = TypeAnomalie.DEPART_ANTICIPE
 
     if type_anomalie is None:

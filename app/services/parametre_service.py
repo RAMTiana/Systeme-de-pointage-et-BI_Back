@@ -8,6 +8,7 @@ de données de référence (section 5 du script SQL d'origine) n'est pas
 nécessairement encore insérée dans toutes les installations, et l'API ne
 doit jamais échouer faute d'un paramètre non encore configuré.
 """
+from datetime import time as time_
 from typing import List, Optional
 
 from fastapi import HTTPException, status
@@ -35,6 +36,23 @@ def get_float(db: Session, nom_parametre: str, default: float) -> float:
     try:
         return float(valeur) if valeur is not None else default
     except ValueError:
+        return default
+
+
+def get_time(db: Session, nom_parametre: str, default: time_) -> time_:
+    """
+    Lit un paramètre stocké au format texte "HH:MM" (ex. heure_debut_travail,
+    heure_fin_travail) et le convertit en `time`. Retombe sur `default` si le
+    paramètre est absent ou mal formé, comme les autres lecteurs typés de ce
+    module.
+    """
+    valeur = get_valeur(db, nom_parametre)
+    if not valeur:
+        return default
+    try:
+        heures, minutes = valeur.strip().split(":")
+        return time_(hour=int(heures), minute=int(minutes))
+    except (ValueError, AttributeError):
         return default
 
 
