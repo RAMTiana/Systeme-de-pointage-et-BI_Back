@@ -1,7 +1,7 @@
 """Agrégation des routeurs de l'API v1."""
 from fastapi import APIRouter
 
-from app.api.v1 import agents, anomalies, auth, bi, parametres, pointage, rapports, services, utilisateurs
+from app.api.v1 import agents, anomalies, auth, bi, parametres, pointage, rapports, services, utilisateurs,ia
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
@@ -14,5 +14,6 @@ api_router.include_router(anomalies.router)
 api_router.include_router(rapports.router)
 api_router.include_router(parametres.router)
 api_router.include_router(bi.router)
+api_router.include_router(ia.router)
 
 __all__ = ["api_router"]
