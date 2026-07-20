@@ -122,17 +122,54 @@ def _verifier_agent_actif(agent: Agent) -> None:
 # Détection de doublon (étapes 9-11)
 # --------------------------------------------------------------------
 
-def _pointage_deja_enregistre_aujourdhui(db: Session, id_agent: int, type_pointage: TypePointage, instant: datetime) -> bool:
-    """Empêche un double pointage du même type (entrée ou sortie) sur la même journée."""
+def _dernier_pointage_valide_du_jour(db: Session, id_agent: int, instant: datetime) -> Optional[Pointage]:
     debut_jour = datetime.combine(instant.date(), datetime.min.time())
     fin_jour = datetime.combine(instant.date(), datetime.max.time())
-    stmt = select(func.count()).select_from(Pointage).where(
-        Pointage.id_agent == id_agent,
-        Pointage.type_pointage == type_pointage,
-        Pointage.statut == StatutPointage.VALIDE,
-        Pointage.date_heure.between(debut_jour, fin_jour),
+    stmt = (
+        select(Pointage)
+        .where(
+            Pointage.id_agent == id_agent,
+            Pointage.statut == StatutPointage.VALIDE,
+            Pointage.date_heure.between(debut_jour, fin_jour),
+        )
+        .order_by(Pointage.date_heure.desc())
+        .limit(1)
     )
-    return db.execute(stmt).scalar_one() > 0
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def _pointage_deja_enregistre_aujourdhui(db: Session, id_agent: int, type_pointage: TypePointage, instant: datetime) -> bool:
+    """
+    Empêche un pointage incohérent avec la séquence de la journée — et non
+    plus un simple comptage "déjà un pointage de ce type aujourd'hui", qui
+    empêchait à tort une nouvelle entrée après une sortie exceptionnelle
+    (urgence, cas familial, raison médicale, autorisation de la
+    hiérarchie...) alors que l'agent est censé revenir dans la journée.
+
+    Règles :
+      - ENTRÉE : refusée seulement si l'agent est déjà "dedans" (le dernier
+        pointage validé du jour est une entrée sans sortie depuis), ou si sa
+        journée est déjà officiellement terminée (dernier pointage = sortie
+        "normale", fin de service — pas de retour attendu).
+      - SORTIE : refusée seulement si l'agent est déjà "dehors" (le dernier
+        pointage validé du jour est déjà une sortie, quel qu'en soit le
+        motif — on ne peut pas sortir deux fois sans être rentré entre-temps).
+    """
+    dernier = _dernier_pointage_valide_du_jour(db, id_agent, instant)
+    if dernier is None:
+        return False
+
+    if type_pointage == TypePointage.ENTREE:
+        if dernier.type_pointage == TypePointage.ENTREE:
+            return True  # déjà "dedans", pas encore ressorti
+        # dernier est une sortie : une nouvelle entrée n'est autorisée que si
+        # cette sortie était exceptionnelle (l'agent revient dans la journée).
+        # Une sortie "normale" (ou sans motif renseigné, cas historique)
+        # clôture la journée : pas de nouvelle entrée attendue.
+        return dernier.motif_sortie is None or dernier.motif_sortie == MotifSortie.NORMALE
+
+    # type_pointage == SORTIE
+    return dernier.type_pointage == TypePointage.SORTIE
 
 
 # --------------------------------------------------------------------
