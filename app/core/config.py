@@ -104,12 +104,6 @@ class Settings(BaseSettings):
     # --- Rapports ---
     REPORTS_DIR: str = "storage/rapports"
 
-    # --- IA ---
-    IA_BASE_URL: str = "https://api.openai.com/v1"
-    IA_API_KEY: str | None = None
-    IA_MODEL: str = "gpt-4o-mini"
-    IA_TIMEOUT_SECONDS: int = 60
-
     @computed_field
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
