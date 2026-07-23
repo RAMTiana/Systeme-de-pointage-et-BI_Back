@@ -80,11 +80,11 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
     jour = jour or date_.today()
     jour_semaine = _JOURS_PAR_INDEX[jour.weekday()]
 
-    nom_service = "Tous services"
+    nom_service = "Toutes les divisions"
     if id_service is not None:
         service = db.get(Service, id_service)
         if service is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Division introuvable.")
         nom_service = service.nom_service
 
     agents = _agents_du_perimetre(db, id_service)
@@ -149,7 +149,7 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
         if est_retardataire:
             nombre_retardataires += 1
 
-        nom_s = services_par_id.get(agent.id_service, "Sans service")
+        nom_s = services_par_id.get(agent.id_service, "Sans division")
         compteur = _compteur_service(agent.id_service, nom_s)
         if attendu:
             compteur["nombre_agents_attendus"] += 1
@@ -279,7 +279,7 @@ def classement_agents(
         resultats.append({
             **indicateurs,
             "id_service": agent.id_service,
-            "nom_service": noms_services.get(agent.id_service, "Sans service"),
+            "nom_service": noms_services.get(agent.id_service, "Sans division"),
         })
 
     if critere == "ponctualite":

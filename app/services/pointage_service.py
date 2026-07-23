@@ -271,6 +271,38 @@ def _ajouter_minutes(heure, minutes: int):
     return reference.time()
 
 
+def _entree_apres_sortie_exceptionnelle(db: Session, agent: Agent, pointage: Pointage) -> bool:
+    """
+    Une entrée qui fait suite, le même jour, à une sortie exceptionnelle
+    (urgence, raison familiale, raison médicale, autorisation de la
+    hiérarchie... — cf. `_MOTIFS_SORTIE_EXCEPTIONNELS`) est le retour de
+    l'agent après une absence déjà autorisée, pas une arrivée tardive au
+    poste : elle ne doit donc jamais être qualifiée de "retard", quelle que
+    soit l'heure de ce retour. Seule une sortie "normale" (fin de service)
+    ferme la journée sans attendre de retour ; les autres motifs de sortie
+    exonèrent l'entrée suivante de toute détection de retard.
+    """
+    debut_jour = datetime.combine(pointage.date_heure.date(), datetime.min.time())
+    stmt = (
+        select(Pointage)
+        .where(
+            Pointage.id_agent == agent.id_agent,
+            Pointage.type_pointage == TypePointage.SORTIE,
+            Pointage.statut == StatutPointage.VALIDE,
+            Pointage.date_heure >= debut_jour,
+            Pointage.date_heure < pointage.date_heure,
+        )
+        .order_by(Pointage.date_heure.desc())
+        .limit(1)
+    )
+    derniere_sortie = db.execute(stmt).scalar_one_or_none()
+    return (
+        derniere_sortie is not None
+        and derniere_sortie.motif_sortie is not None
+        and derniere_sortie.motif_sortie in _MOTIFS_SORTIE_EXCEPTIONNELS
+    )
+
+
 def _detecter_anomalie_horaire(db: Session, agent: Agent, pointage: Pointage) -> Optional[Anomalie]:
     if agent.id_service is None:
         return None  # pas de service principal -> pas d'horaire de référence exploitable
@@ -285,6 +317,8 @@ def _detecter_anomalie_horaire(db: Session, agent: Agent, pointage: Pointage) ->
     type_anomalie: Optional[TypeAnomalie] = None
 
     if pointage.type_pointage == TypePointage.ENTREE:
+        if _entree_apres_sortie_exceptionnelle(db, agent, pointage):
+            return None  # retour après sortie exceptionnelle : jamais un retard
         seuil_minutes = parametre_service.get_int(db, "seuil_retard_minutes", default=15)
         limite = _ajouter_minutes(heure_debut, seuil_minutes)
         if heure_pointage > limite:
