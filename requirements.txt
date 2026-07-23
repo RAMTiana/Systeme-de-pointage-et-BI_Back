@@ -48,3 +48,9 @@ requests==2.32.3
 
 # --- Divers ---
 python-dateutil==2.9.0.post0
+
+# --- Machine learning (module BI : prévision, anomalies, score de risque ;
+#     assistant IA : classification d'intention) — 100% local, aucun appel
+#     à une API tierce ---
+numpy==1.26.4
+scikit-learn==1.5.2

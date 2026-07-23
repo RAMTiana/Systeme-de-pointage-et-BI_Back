@@ -36,6 +36,7 @@ from app.models.horaire_reference import HoraireReference
 from app.models.pointage import Pointage
 from app.models.service import Service
 from app.services import rapport_service
+from app.ml import anomalies_ml, prevision_ml, risque_agents
 
 # Dupliqué depuis anomalie_service/rapport_service (même convention) plutôt
 # qu'une dépendance croisée sur une constante privée d'un autre module.
@@ -80,11 +81,11 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
     jour = jour or date_.today()
     jour_semaine = _JOURS_PAR_INDEX[jour.weekday()]
 
-    nom_service = "Toutes les divisions"
+    nom_service = "Tous services"
     if id_service is not None:
         service = db.get(Service, id_service)
         if service is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Division introuvable.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service introuvable.")
         nom_service = service.nom_service
 
     agents = _agents_du_perimetre(db, id_service)
@@ -149,7 +150,7 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
         if est_retardataire:
             nombre_retardataires += 1
 
-        nom_s = services_par_id.get(agent.id_service, "Sans division")
+        nom_s = services_par_id.get(agent.id_service, "Sans service")
         compteur = _compteur_service(agent.id_service, nom_s)
         if attendu:
             compteur["nombre_agents_attendus"] += 1
@@ -279,7 +280,7 @@ def classement_agents(
         resultats.append({
             **indicateurs,
             "id_service": agent.id_service,
-            "nom_service": noms_services.get(agent.id_service, "Sans division"),
+            "nom_service": noms_services.get(agent.id_service, "Sans service"),
         })
 
     if critere == "ponctualite":
@@ -405,3 +406,203 @@ def prevision(
             "sans valeur d'engagement."
         ),
     }
+
+
+def prevision_ml(
+    db: Session,
+    granularite: TypePeriode,
+    id_service: Optional[int] = None,
+    nombre_periodes_historique: int = 6,
+    horizon: int = 3,
+    date_reference: Optional[date_] = None,
+) -> dict:
+    """
+    Variante ML de `prevision()` : un modèle de gradient boosting
+    (scikit-learn), entraîné à la demande sur l'historique récent, remplace
+    la régression linéaire simple pour capter des dynamiques non linéaires.
+
+    Repli automatique sur la régression linéaire existante si l'historique
+    est trop court pour entraîner un modèle ML fiable (cf.
+    `prevision_ml.NB_MIN_POINTS_ML`) : le champ `methode` de la réponse
+    indique toujours ce qui a réellement été utilisé.
+    """
+    date_reference = date_reference or (date_.today() - timedelta(days=1))
+    buckets_historique = _buckets_recents(granularite, date_reference, nombre_periodes_historique)
+
+    historique = []
+    points_regression: List[Tuple[int, float]] = []
+    for index, (debut, _fin) in enumerate(buckets_historique):
+        indicateurs = rapport_service.calculer_indicateurs(db, granularite, id_service, date_reference=debut)
+        taux = indicateurs["globaux"]["taux_presence"]
+        historique.append({
+            "periode_debut": indicateurs["periode_debut"],
+            "periode_fin": indicateurs["periode_fin"],
+            "globaux": indicateurs["globaux"],
+        })
+        if taux is not None:
+            points_regression.append((index, taux))
+
+    methode = "gradient_boosting_ml"
+    valeurs_predites = prevision_ml_module_predire(points_regression, horizon)
+
+    if valeurs_predites is None:
+        coefficients = _regression_lineaire(points_regression)
+        if coefficients is None:
+            return {
+                "granularite": granularite,
+                "id_service": id_service,
+                "methode": "aucune",
+                "historique": historique,
+                "prevision": [],
+                "avertissement": (
+                    "Historique insuffisant (au moins 2 périodes avec des données) pour "
+                    "estimer une tendance, même avec la méthode de repli."
+                ),
+            }
+        methode = "regression_lineaire_simple (repli, historique insuffisant pour le ML)"
+        pente, ordonnee = coefficients
+        valeurs_predites = [
+            max(0.0, min(1.0, pente * (len(buckets_historique) + i) + ordonnee)) for i in range(horizon)
+        ]
+
+    projections: List[dict] = []
+    _debut, dernier_fin = buckets_historique[-1]
+    debut_projete, fin_projetee = rapport_service.bornes_periode(granularite, dernier_fin + timedelta(days=1))
+    for valeur in valeurs_predites:
+        projections.append({
+            "periode_debut": debut_projete,
+            "periode_fin": fin_projetee,
+            "taux_presence_estime": round(valeur, 4),
+        })
+        debut_projete, fin_projetee = rapport_service.bornes_periode(granularite, fin_projetee + timedelta(days=1))
+
+    return {
+        "granularite": granularite,
+        "id_service": id_service,
+        "methode": methode,
+        "historique": historique,
+        "prevision": projections,
+        "avertissement": (
+            "Estimation indicative produite par un modèle de gradient boosting entraîné sur "
+            "l'historique récent (prévision récursive multi-étapes) — à interpréter avec "
+            "prudence, sans valeur d'engagement."
+            if methode == "gradient_boosting_ml"
+            else "Estimation indicative (méthode de repli) — à interpréter avec prudence, sans valeur d'engagement."
+        ),
+    }
+
+
+def prevision_ml_module_predire(points_regression: List[Tuple[int, float]], horizon: int) -> Optional[List[float]]:
+    """Petit indirect pour garder un nom explicite au niveau de l'appel ci-dessus."""
+    return prevision_ml.entrainer_et_predire(points_regression, horizon)
+
+
+def detection_anomalies_ml(
+    db: Session,
+    type_periode: TypePeriode,
+    id_service: Optional[int] = None,
+    date_reference: Optional[date_] = None,
+) -> List[dict]:
+    """
+    "Repérer des comportements inhabituels" au sens large : compare le profil
+    de chaque agent du périmètre (taux de présence, retards, absences,
+    départs anticipés, heures travaillées) à celui du reste du groupe sur la
+    période, via un Isolation Forest. Complète les règles à seuils fixes du
+    module Anomalies, qui ne regardent qu'un indicateur à la fois.
+
+    id_service=None -> comparaison entre tous les agents actifs (tous
+    services confondus) ; sinon, comparaison restreinte aux agents du
+    service.
+    """
+    indicateurs = rapport_service.calculer_indicateurs(db, type_periode, id_service, date_reference=date_reference)
+
+    if id_service is not None:
+        profils = indicateurs["detail_agents"]
+    else:
+        agents = _agents_du_perimetre(db, None)
+        ids_agents = [a.id_agent for a in agents]
+        compte_anomalies = rapport_service.compter_anomalies_par_type(
+            db, ids_agents, indicateurs["periode_debut"], indicateurs["periode_fin"]
+        )
+        profils = []
+        jours_ouvres_par_service: Dict[Optional[int], int] = {}
+        for agent in agents:
+            if agent.id_service not in jours_ouvres_par_service:
+                jours_ouvres_par_service[agent.id_service] = rapport_service.jours_ouvres_service(
+                    db, agent.id_service, indicateurs["periode_debut"], indicateurs["periode_fin"]
+                )
+            jours_ouvres = jours_ouvres_par_service[agent.id_service]
+            heures = rapport_service.heures_travaillees_agent(
+                db, agent.id_agent, indicateurs["periode_debut"], indicateurs["periode_fin"]
+            )
+            profils.append(rapport_service.indicateurs_agent(agent, jours_ouvres, heures, compte_anomalies))
+
+    return anomalies_ml.detecter(profils)
+
+
+def score_risque_agents(
+    db: Session,
+    id_service: Optional[int] = None,
+    nombre_mois_historique: int = 7,
+    date_reference: Optional[date_] = None,
+) -> List[dict]:
+    """
+    Entraîne un classifieur sur l'historique mensuel de tous les agents du
+    périmètre (mois M -> anomalie constatée au mois M+1), puis prédit, pour
+    chaque agent, sa probabilité de connaître une anomalie sur le mois à
+    venir à partir de son dernier mois complet.
+
+    Repli heuristique (sans ML, cf. `risque_agents.score_heuristique`) si
+    l'historique global est trop court pour entraîner un modèle fiable — le
+    champ `methode` du résultat indique toujours lequel des deux a été
+    utilisé.
+    """
+    agents = _agents_du_perimetre(db, id_service)
+    if not agents:
+        return []
+
+    date_reference = date_reference or (date_.today() - timedelta(days=1))
+    buckets = _buckets_recents(TypePeriode.MOIS, date_reference, nombre_mois_historique + 1)
+    noms_services = {s.id_service: s.nom_service for s in db.execute(select(Service)).scalars().all()}
+
+    historique_par_agent: Dict[int, List[dict]] = {agent.id_agent: [] for agent in agents}
+    for debut, fin in buckets:
+        ids_agents = [a.id_agent for a in agents]
+        compte_anomalies = rapport_service.compter_anomalies_par_type(db, ids_agents, debut, fin)
+        jours_ouvres_par_service: Dict[Optional[int], int] = {}
+        for agent in agents:
+            if agent.id_service not in jours_ouvres_par_service:
+                jours_ouvres_par_service[agent.id_service] = rapport_service.jours_ouvres_service(
+                    db, agent.id_service, debut, fin
+                )
+            jours_ouvres = jours_ouvres_par_service[agent.id_service]
+            heures = rapport_service.heures_travaillees_agent(db, agent.id_agent, debut, fin)
+            historique_par_agent[agent.id_agent].append(
+                rapport_service.indicateurs_agent(agent, jours_ouvres, heures, compte_anomalies)
+            )
+
+    modele = risque_agents.entrainer(historique_par_agent)
+    methode = "gradient_boosting_ml" if modele is not None else "heuristique (historique insuffisant pour le ML)"
+
+    resultats = []
+    for agent in agents:
+        dernier_mois = historique_par_agent[agent.id_agent][-1]
+        if dernier_mois["taux_presence"] is None:
+            continue
+        if modele is not None:
+            score = risque_agents.predire_probabilite(modele, dernier_mois)
+        else:
+            score = risque_agents.score_heuristique(dernier_mois)
+        resultats.append({
+            "id_agent": agent.id_agent,
+            "matricule": agent.matricule,
+            "nom": agent.nom,
+            "prenom": agent.prenom,
+            "id_service": agent.id_service,
+            "nom_service": noms_services.get(agent.id_service, "Sans service"),
+            "score_risque": score,
+            "methode": methode,
+        })
+
+    resultats.sort(key=lambda a: -a["score_risque"])
+    return resultats

@@ -112,3 +112,34 @@ class PrevisionOut(BaseModel):
 
 
 CritereClassement = Literal["ponctualite", "retards"]
+
+
+class AnomalieAgentScoreOut(BaseModel):
+    """Profil d'agent enrichi d'un score d'anomalie (Isolation Forest)."""
+    id_agent: int
+    matricule: str
+    nom: str
+    prenom: str
+    id_service: Optional[int] = None
+    nom_service: Optional[str] = None
+    jours_ouvres: int
+    jours_presents: int
+    nombre_retards: int
+    nombre_absences: int
+    nombre_departs_anticipes: int
+    heures_travaillees: float
+    taux_presence: Optional[float] = None
+    score_anomalie: float
+    est_atypique: bool
+
+
+class ScoreRisqueAgentOut(BaseModel):
+    """Probabilité qu'un agent connaisse une anomalie (retard/absence) sur la période à venir."""
+    id_agent: int
+    matricule: str
+    nom: str
+    prenom: str
+    id_service: Optional[int]
+    nom_service: str
+    score_risque: float
+    methode: str

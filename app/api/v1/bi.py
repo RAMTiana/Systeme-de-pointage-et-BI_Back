@@ -10,11 +10,13 @@ from app.api.deps import get_db, require_permission
 from app.models.enums import TypePeriode
 from app.models.utilisateur import Utilisateur
 from app.schemas.bi import (
+    AnomalieAgentScoreOut,
     ClassementAgentOut,
     ComparaisonServicesOut,
     CritereClassement,
     PointTendance,
     PrevisionOut,
+    ScoreRisqueAgentOut,
     TableauBordTempsReel,
 )
 from app.services import bi_service, journal_audit_service
@@ -112,4 +114,64 @@ def prevision(
         db, granularite, id_service=id_service,
         nombre_periodes_historique=nombre_periodes_historique, horizon=horizon,
         date_reference=date_reference,
+    )
+
+
+@router.get("/prevision-ml", response_model=PrevisionOut)
+def prevision_ml(
+    granularite: TypePeriode = Query(default=TypePeriode.MOIS),
+    id_service: Optional[int] = None,
+    nombre_periodes_historique: int = Query(default=6, ge=2, le=24),
+    horizon: int = Query(default=3, ge=1, le=12),
+    date_reference: Optional[date_] = None,
+    db: Session = Depends(get_db),
+    _utilisateur: Utilisateur = _PROTECTION,
+) -> PrevisionOut:
+    """
+    Tableau de bord prédictif — variante machine learning (gradient boosting,
+    scikit-learn) au lieu de la régression linéaire simple de `/prevision`.
+    Repli automatique sur cette dernière si l'historique disponible est trop
+    court pour entraîner un modèle ML fiable (cf. champ `methode` renvoyé).
+    """
+    return bi_service.prevision_ml(
+        db, granularite, id_service=id_service,
+        nombre_periodes_historique=nombre_periodes_historique, horizon=horizon,
+        date_reference=date_reference,
+    )
+
+
+@router.get("/anomalies-ml", response_model=List[AnomalieAgentScoreOut])
+def anomalies_ml(
+    type_periode: TypePeriode = Query(default=TypePeriode.MOIS),
+    id_service: Optional[int] = None,
+    date_reference: Optional[date_] = None,
+    db: Session = Depends(get_db),
+    _utilisateur: Utilisateur = _PROTECTION,
+) -> List[AnomalieAgentScoreOut]:
+    """
+    Détection d'anomalies « intelligente » : compare le profil de chaque
+    agent (présence, retards, absences, départs anticipés, heures) à celui
+    du reste du périmètre via un Isolation Forest, en complément des règles
+    à seuils fixes du module Anomalies. Liste vide si le périmètre compte
+    moins de 5 agents (comparaison statistique non pertinente).
+    """
+    return bi_service.detection_anomalies_ml(db, type_periode, id_service=id_service, date_reference=date_reference)
+
+
+@router.get("/score-risque", response_model=List[ScoreRisqueAgentOut])
+def score_risque(
+    id_service: Optional[int] = None,
+    nombre_mois_historique: int = Query(default=7, ge=2, le=24),
+    date_reference: Optional[date_] = None,
+    db: Session = Depends(get_db),
+    _utilisateur: Utilisateur = _PROTECTION,
+) -> List[ScoreRisqueAgentOut]:
+    """
+    Score de risque par agent : probabilité qu'un agent connaisse un retard
+    ou une absence sur le mois à venir, estimée par un classifieur entraîné
+    sur l'historique mensuel du périmètre. Repli heuristique si l'historique
+    est trop court (cf. champ `methode` renvoyé pour chaque agent).
+    """
+    return bi_service.score_risque_agents(
+        db, id_service=id_service, nombre_mois_historique=nombre_mois_historique, date_reference=date_reference
     )

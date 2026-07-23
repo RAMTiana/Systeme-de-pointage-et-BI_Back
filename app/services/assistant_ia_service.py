@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 from app.models.enums import FormatRapport, StatutJustification, TypeAnomalie, TypePeriode
 from app.models.utilisateur import Utilisateur
 from app.services import agent_service, anomalie_service, bi_service, journal_audit_service, rapport_service
+from app.ml import intent_classifier
 
 # ----------------------------------------------------------------------
 # Détection d'intention (mots-clés, insensible à la casse/accents partiels)
@@ -59,12 +60,22 @@ def _contient(message: str, mots: tuple) -> bool:
     return any(mot in message for mot in mots)
 
 
-def detecter_intention(message: str) -> str:
+_MOTS_RISQUE = ("risque", "risquent", "à surveiller", "a surveiller", "score de risque")
+
+
+def _detecter_intention_mots_cles(message: str) -> str:
+    """
+    Moteur d'intention à mots-clés (approche d'origine) : sert de filet de
+    sécurité lorsque le classifieur ML (`intent_classifier`) n'est pas
+    assez confiant sur le message reçu.
+    """
     m = message.lower().strip()
     if _contient(m, _MOTS_RAPPORT):
         return "rapport"
     if _contient(m, _MOTS_PREVISION):
         return "prevision"
+    if _contient(m, _MOTS_RISQUE):
+        return "risque"
     # Une question sur les anomalies EN GÉNÉRAL (pas un classement d'agent
     # précis, cf. question_rh) déclenche le résumé du module Anomalies.
     if _contient(m, _MOTS_ANOMALIES) or (
@@ -79,6 +90,25 @@ def detecter_intention(message: str) -> str:
     return "question_rh"
 
 
+def detecter_intention(message: str) -> str:
+    """
+    Détection d'intention : le classifieur ML (TF-IDF + régression
+    logistique, entraîné en local sur un petit jeu de phrases types) est
+    utilisé en premier, car il reconnaît des formulations qui ne contiennent
+    pas exactement les mots-clés attendus. En cas de confiance insuffisante
+    (`intent_classifier.SEUIL_CONFIANCE`) ou de message vide, on retombe sur
+    le moteur à mots-clés, plus prévisible.
+    """
+    m = message.strip()
+    if not m:
+        return "aide"
+
+    intention_ml, confiance = intent_classifier.predire(m)
+    if confiance >= intent_classifier.SEUIL_CONFIANCE:
+        return intention_ml
+    return _detecter_intention_mots_cles(m)
+
+
 def _a_permission(utilisateur: Utilisateur, nom_permission: str) -> bool:
     return nom_permission in {p.nom_permission for p in utilisateur.role.permissions}
 
@@ -86,6 +116,7 @@ def _a_permission(utilisateur: Utilisateur, nom_permission: str) -> bool:
 _ACTIONS_PAR_DEFAUT = [
     {"libelle": "Résumé des anomalies", "intention": "anomalies"},
     {"libelle": "Prévisions de présence", "intention": "prevision"},
+    {"libelle": "Agents à risque", "intention": "risque"},
     {"libelle": "Générer un rapport", "intention": "rapport"},
     {"libelle": "Poser une question RH", "intention": "question_rh"},
 ]
@@ -181,6 +212,42 @@ def _repondre_prevision(db: Session, utilisateur: Utilisateur, id_service: Optio
         )
 
     return {"reponse": texte, "donnees": resultat}
+
+
+# ----------------------------------------------------------------------
+# 2 bis. Score de risque par agent (machine learning)
+# ----------------------------------------------------------------------
+
+def _repondre_risque(db: Session, utilisateur: Utilisateur, id_service: Optional[int]) -> dict:
+    if not _a_permission(utilisateur, "consulter_bi"):
+        return {
+            "reponse": (
+                "Le score de risque par agent fait partie du tableau de bord décisionnel (BI), "
+                "réservé aux profils Administrateur et Chef de service. "
+                "Rapprochez-vous d'un chef de service pour consulter cette information."
+            ),
+            "donnees": None,
+        }
+
+    scores = bi_service.score_risque_agents(db, id_service=id_service)
+    if not scores:
+        return {
+            "reponse": "Aucun agent avec un historique suffisant sur ce périmètre pour établir un score de risque.",
+            "donnees": None,
+        }
+
+    top = scores[:5]
+    lignes = [
+        f"{i+1}. {a['prenom']} {a['nom']} — risque estimé : {round(a['score_risque'] * 100, 1)} %"
+        for i, a in enumerate(top)
+    ]
+    methode = top[0]["methode"]
+    texte = (
+        "Agents avec le risque estimé le plus élevé de retard ou d'absence sur la période à venir :\n"
+        + "\n".join(lignes)
+        + f"\n\n(méthode : {methode})"
+    )
+    return {"reponse": texte, "donnees": {"scores": scores}}
 
 
 # ----------------------------------------------------------------------
@@ -355,6 +422,7 @@ def _reponse_aide() -> dict:
             "Je suis l'assistant du système de pointage. Je peux :\n"
             "- résumer les anomalies récentes (retards, absences, départs anticipés) ;\n"
             "- donner une prévision de présence sur les prochains mois ;\n"
+            "- signaler les agents à risque de retard/absence (score prédictif) ;\n"
             "- générer un rapport (jour/semaine/mois/année, PDF ou Excel) ;\n"
             "- répondre à des questions RH sur les effectifs et la présence.\n"
             "Posez votre question, ou utilisez les boutons ci-dessous."
@@ -370,6 +438,8 @@ def traiter_message(db: Session, utilisateur: Utilisateur, message: str, id_serv
         resultat = _repondre_anomalies(db, id_service)
     elif intention == "prevision":
         resultat = _repondre_prevision(db, utilisateur, id_service)
+    elif intention == "risque":
+        resultat = _repondre_risque(db, utilisateur, id_service)
     elif intention == "rapport":
         resultat = _repondre_rapport(db, utilisateur, message, id_service)
     elif intention == "question_rh":

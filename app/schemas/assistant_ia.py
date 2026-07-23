@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-Intention = Literal["anomalies", "prevision", "rapport", "question_rh", "aide"]
+Intention = Literal["anomalies", "prevision", "risque", "rapport", "question_rh", "aide"]
 
 
 class AssistantActionRapide(BaseModel):
