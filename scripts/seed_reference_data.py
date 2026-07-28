@@ -64,6 +64,7 @@ PERMISSIONS: List[Tuple[str, str]] = [
     ("generer_rapports", "Générer et exporter les rapports"),
     ("consulter_bi", "Accéder au tableau de bord décisionnel"),
     ("valider_roles", "Valider les rôles et permissions des agents"),
+    ("gerer_conges", "Enregistrer et annuler les congés des agents (registre local, sans approbation)"),
 ]
 
 # ---------------------------------------------------------------------
@@ -90,11 +91,18 @@ PERMISSIONS: List[Tuple[str, str]] = [
 #     quotidien des pointages • Correction des anomalies • Génération des
 #     rapports" (chapitre IV) — mais n'apparaît pas dans les lanes du
 #     Processus 5 (BI), donc pas de `consulter_bi`.
+#   - Congés (module ajouté) : pas de circuit d'approbation local (la
+#     fonction publique malgache dispose déjà d'un système national dédié,
+#     commun à tous les ministères) — `gerer_conges` va donc uniquement à la
+#     Secrétaire, même nature de tâche que `gerer_agents` (simple registre
+#     local pour que la détection d'absence exclue les agents en congé).
 # ---------------------------------------------------------------------
 AFFECTATIONS: Dict[str, List[str]] = {
     "Administrateur": [nom for nom, _ in PERMISSIONS],
     "Chef de service": ["valider_roles", "consulter_bi"],
-    "Secretaire": ["gerer_agents", "gerer_services", "traiter_anomalies", "generer_rapports"],
+    "Secretaire": [
+        "gerer_agents", "gerer_services", "traiter_anomalies", "generer_rapports", "gerer_conges",
+    ],
 }
 
 # ---------------------------------------------------------------------

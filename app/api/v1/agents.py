@@ -55,7 +55,7 @@ def lister_agents(
     id_service: Optional[int] = Query(default=None, description="Filtrer par service principal"),
     statut: Optional[StatutAgent] = Query(default=None, description="Filtrer par statut"),
     skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=500),
     db: Session = Depends(get_db),
     _utilisateur=Depends(get_current_active_user),
 ) -> Page[AgentOut]:

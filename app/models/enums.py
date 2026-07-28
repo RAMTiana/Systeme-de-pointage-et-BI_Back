@@ -115,3 +115,25 @@ class AuthProvider(str, enum.Enum):
 class TypeCode(str, enum.Enum):
     RESET_PASSWORD = "reset_password"
     VERIFICATION_EMAIL = "verification_email"
+
+
+class TypeConge(str, enum.Enum):
+    CONGE_ANNUEL = "conge_annuel"
+    MALADIE = "maladie"
+    MATERNITE = "maternite"
+    PATERNITE = "paternite"
+    EVENEMENT_FAMILIAL = "evenement_familial"
+    SANS_SOLDE = "sans_solde"
+    AUTRE = "autre"
+
+
+class StatutConge(str, enum.Enum):
+    """
+    Pas de circuit d'approbation local : la fonction publique malgache dispose
+    d'un système national dédié aux demandes de congé/absence, commun à tous
+    les ministères. Ce module ne fait qu'enregistrer, côté SRB, un congé déjà
+    validé ailleurs — pour que `anomalie_service.detecter_absences` sache
+    exclure l'agent concerné plutôt que de le signaler à tort comme absent.
+    """
+    ACTIF = "actif"
+    ANNULE = "annule"

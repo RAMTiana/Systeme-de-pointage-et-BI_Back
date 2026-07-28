@@ -38,7 +38,7 @@ from app.models.enums import JourSemaine, StatutAgent, StatutJustification, Stat
 from app.models.horaire_reference import HoraireReference
 from app.models.justificatif import Justificatif
 from app.models.pointage import Pointage
-from app.services import alerte_service, horaire_service, journal_audit_service, parametre_service
+from app.services import alerte_service, conge_service, horaire_service, journal_audit_service, parametre_service
 
 _JOURS_PAR_INDEX = [
     JourSemaine.LUNDI,
@@ -271,6 +271,12 @@ def detecter_absences(db: Session, jour: Optional[date_] = None) -> List[Anomali
     horaire de référence un jour de week-end est considéré comme non
     travaillé et n'est pas contrôlé — même règle que la détection du retard
     au pointage.
+
+    Un agent en congé ACTIF couvrant ce jour (cf. `conge_service`, simple
+    registre — pas d'approbation locale, le congé est déjà validé par le
+    système national de gestion des congés de la fonction publique) est
+    exclu de la détection : il ne pointe pas non plus, mais ce n'est pas une
+    absence à qualifier ni à alerter.
     """
     jour = jour or (date_.today() - timedelta(days=1))
     jour_semaine = _JOURS_PAR_INDEX[jour.weekday()]
@@ -303,8 +309,17 @@ def detecter_absences(db: Session, jour: Optional[date_] = None) -> List[Anomali
 
     agents = list(db.execute(stmt_agents).scalars().all())
 
+    # Un agent en congé actif ce jour-là ne pointe jamais non plus, mais
+    # ce n'est pas une absence : requête groupée en amont (plutôt qu'un appel
+    # par agent dans la boucle) pour rester efficace sur un périmètre large.
+    ids_agents_en_conge = conge_service.agents_en_conge(
+        db, jour, ids_agents=[a.id_agent for a in agents]
+    )
+
     anomalies_creees: List[Anomalie] = []
     for agent in agents:
+        if agent.id_agent in ids_agents_en_conge:
+            continue
         if _a_pointe_entree(db, agent.id_agent, jour):
             continue
         if _absence_deja_consignee(db, agent.id_agent, jour):
