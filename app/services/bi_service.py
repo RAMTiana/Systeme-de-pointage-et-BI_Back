@@ -71,6 +71,18 @@ def _service_travaille_ce_jour(jours_horaire: Dict[Optional[int], set], id_servi
     return jour_semaine in jours
 
 
+def _signal_agent(agent: Agent, nom_service: str) -> dict:
+    """Identification minimale d'un agent pour les listes nominatives (absents/retardataires du jour)."""
+    return {
+        "id_agent": agent.id_agent,
+        "matricule": agent.matricule,
+        "nom": agent.nom,
+        "prenom": agent.prenom,
+        "id_service": agent.id_service,
+        "nom_service": nom_service,
+    }
+
+
 def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jour: Optional[date_] = None) -> dict:
     """
     Étapes 2-8 du Processus 5, cas "vue opérationnelle" : statut du jour pour
@@ -133,11 +145,14 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
     services_par_id = {s.id_service: s.nom_service for s in db.execute(select(Service)).scalars().all()}
 
     nombre_presents = nombre_sortis = nombre_absents = nombre_retardataires = nombre_attendus = 0
+    agents_absents: List[dict] = []
+    agents_retardataires: List[dict] = []
 
     for agent in agents:
         attendu = _service_travaille_ce_jour(jours_horaire, agent.id_service, jour_semaine)
         statut_jour = dernier_pointage.get(agent.id_agent)
         est_retardataire = agent.id_agent in ids_retardataires
+        nom_s = services_par_id.get(agent.id_service, "Sans service")
 
         if attendu:
             nombre_attendus += 1
@@ -147,10 +162,11 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
             nombre_sortis += 1
         elif attendu:
             nombre_absents += 1
+            agents_absents.append(_signal_agent(agent, nom_s))
         if est_retardataire:
             nombre_retardataires += 1
+            agents_retardataires.append(_signal_agent(agent, nom_s))
 
-        nom_s = services_par_id.get(agent.id_service, "Sans service")
         compteur = _compteur_service(agent.id_service, nom_s)
         if attendu:
             compteur["nombre_agents_attendus"] += 1
@@ -162,6 +178,9 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
             compteur["nombre_absents"] += 1
         if est_retardataire:
             compteur["nombre_retardataires"] += 1
+
+    agents_absents.sort(key=lambda a: (a["nom"], a["prenom"]))
+    agents_retardataires.sort(key=lambda a: (a["nom"], a["prenom"]))
 
     def _avec_taux(c: dict) -> dict:
         presents_ou_sortis = c["nombre_presents"] + c["nombre_sortis"]
@@ -183,6 +202,8 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
         "nombre_retardataires": nombre_retardataires,
         "taux_presence": taux_presence_global,
         "detail_services": [_avec_taux(c) for c in par_service.values()] if id_service is None else [],
+        "agents_absents": agents_absents,
+        "agents_retardataires": agents_retardataires,
     }
 
 
@@ -252,13 +273,13 @@ def classement_agents(
     date_debut: date_,
     date_fin: date_,
     id_service: Optional[int] = None,
-    critere: Literal["ponctualite", "retards"] = "ponctualite",
+    critere: Literal["ponctualite", "retards", "absences"] = "ponctualite",
     limite: int = 10,
 ) -> List[dict]:
     """
-    "Identifier les agents les plus ponctuels ou les plus souvent en retard" :
-    classement global (id_service=None) ou restreint à un service, sur la
-    période demandée.
+    "Identifier les agents les plus ponctuels, les plus souvent en retard ou
+    les plus souvent absents" : classement global (id_service=None) ou
+    restreint à un service, sur la période demandée.
     """
     agents = _agents_du_perimetre(db, id_service)
     if not agents:
@@ -285,6 +306,8 @@ def classement_agents(
 
     if critere == "ponctualite":
         resultats.sort(key=lambda a: (-(a["taux_presence"] or 0), a["nombre_retards"]))
+    elif critere == "absences":
+        resultats.sort(key=lambda a: (-a["nombre_absences"], -a["nombre_retards"]))
     else:
         resultats.sort(key=lambda a: (-a["nombre_retards"], -(a["nombre_absences"])))
 

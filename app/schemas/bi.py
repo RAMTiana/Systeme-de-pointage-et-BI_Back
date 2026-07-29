@@ -18,12 +18,27 @@ class ServiceTempsReel(BaseModel):
     taux_presence: Optional[float] = None
 
 
+class AgentSignalTempsReel(BaseModel):
+    """Identification minimale d'un agent signalé absent ou en retard le jour affiché."""
+    id_agent: int
+    matricule: str
+    nom: str
+    prenom: str
+    id_service: Optional[int]
+    nom_service: str
+
+
 class TableauBordTempsReel(BaseModel):
     """
     Statut du jour par agent (encore présent / déjà sorti / absent si son
     service travaille aujourd'hui sans qu'aucun pointage ne soit encore
     enregistré). `detail_services` n'est renseigné que pour la vue
     consolidée (`id_service` non précisé en requête).
+
+    `agents_absents` / `agents_retardataires` donnent le détail nominatif
+    correspondant aux compteurs `nombre_absents` / `nombre_retardataires`,
+    triés par nom puis prénom, pour permettre une action ciblée immédiate
+    sans repasser par le module Agents ou Anomalies.
     """
     jour: date_
     id_service: Optional[int]
@@ -35,6 +50,8 @@ class TableauBordTempsReel(BaseModel):
     nombre_retardataires: int
     taux_presence: Optional[float] = None
     detail_services: List[ServiceTempsReel] = []
+    agents_absents: List[AgentSignalTempsReel] = []
+    agents_retardataires: List[AgentSignalTempsReel] = []
 
 
 class IndicateursGlobaux(BaseModel):
@@ -111,7 +128,7 @@ class PrevisionOut(BaseModel):
     avertissement: str
 
 
-CritereClassement = Literal["ponctualite", "retards"]
+CritereClassement = Literal["ponctualite", "retards", "absences"]
 
 
 class AnomalieAgentScoreOut(BaseModel):
