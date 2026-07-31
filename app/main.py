@@ -60,9 +60,21 @@ app.add_middleware(
 @app.exception_handler(Exception)
 async def gestionnaire_erreurs_non_gerees(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Erreur non gérée sur %s %s", request.method, request.url.path)
+    # Ce gestionnaire s'exécute EN DEHORS de CORSMiddleware (ServerErrorMiddleware
+    # est la couche la plus externe) : on ajoute donc les en-têtes CORS à la main,
+    # sinon le navigateur masque le vrai 500 derrière une erreur CORS.
+    origine = request.headers.get("origin")
+    entetes = {}
+    if origine and origine in settings.CORS_ORIGINS_LIST:
+        entetes = {
+            "Access-Control-Allow-Origin": origine,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
     return JSONResponse(
         status_code=500,
         content={"detail": "Erreur interne du serveur. Veuillez réessayer plus tard."},
+        headers=entetes,
     )
 
 

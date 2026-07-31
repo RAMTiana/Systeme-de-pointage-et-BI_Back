@@ -80,6 +80,8 @@ class ClassementAgentOut(BaseModel):
     nom_service: str
     jours_ouvres: int
     jours_presents: int
+    jours_pointes: int = 0
+    jours_conge: int = 0
     nombre_retards: int
     nombre_absences: int
     nombre_departs_anticipes: int

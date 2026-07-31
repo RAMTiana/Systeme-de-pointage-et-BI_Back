@@ -35,8 +35,11 @@ from app.models.enums import JourSemaine, StatutAgent, StatutPointage, TypeAnoma
 from app.models.horaire_reference import HoraireReference
 from app.models.pointage import Pointage
 from app.models.service import Service
-from app.services import rapport_service
-from app.ml import anomalies_ml, prevision_ml, risque_agents
+from app.services import conge_service, rapport_service
+from app.ml import anomalies_ml, risque_agents
+# Alias explicite : le service expose lui aussi une fonction `prevision_ml`,
+# qui masquerait le module importé sous le même nom (AttributeError -> 500).
+from app.ml import prevision_ml as prevision_ml_module
 
 # Dupliqué depuis anomalie_service/rapport_service (même convention) plutôt
 # qu'une dépendance croisée sur une constante privée d'un autre module.
@@ -51,6 +54,16 @@ _JOURS_PAR_INDEX = [
 ]
 
 _MAX_BUCKETS = 60  # garde-fou contre une plage de dates trop large en granularité fine
+
+# Bornes de l'historique fourni aux modèles ML par le module BI.
+# Trop peu de points -> le modèle retombe systématiquement sur le repli
+# statistique ; trop de points -> l'historique ancien (organisation, effectifs
+# différents) dilue le signal récent et alourdit inutilement chaque appel.
+_ML_MIN_POINTS = 8       # objectif minimal de périodes exploitables pour la prévision
+_ML_MAX_PERIODES = 24    # plafond absolu de périodes explorées pour la prévision
+_ML_MIN_ECHANTILLONS = 30   # objectif d'exemples (agent x mois) pour le score de risque
+_ML_MAX_MOIS_RISQUE = 18    # plafond de mois d'historique pour le score de risque
+_ML_MAX_CALCULS_RISQUE = 600  # plafond agents x mois, pour garder un temps de réponse raisonnable
 
 
 # --------------------------------------------------------------------
@@ -133,6 +146,12 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
         ).distinct()
         ids_retardataires = set(db.execute(stmt).scalars().all())
 
+    # Agents en congé ACTIF couvrant ce jour : ils ne sont pas tenus de
+    # pointer (même exclusion que `anomalie_service.detecter_absences`), ils
+    # ne doivent donc pas être comptés comme "attendus" ni remonter dans la
+    # liste des absents du jour.
+    ids_en_conge = conge_service.agents_en_conge(db, jour, ids_agents=ids_agents) if ids_agents else set()
+
     par_service: Dict[Optional[int], dict] = {}
 
     def _compteur_service(id_s: Optional[int], nom_s: str) -> dict:
@@ -149,7 +168,9 @@ def tableau_de_bord_temps_reel(db: Session, id_service: Optional[int] = None, jo
     agents_retardataires: List[dict] = []
 
     for agent in agents:
-        attendu = _service_travaille_ce_jour(jours_horaire, agent.id_service, jour_semaine)
+        attendu = _service_travaille_ce_jour(jours_horaire, agent.id_service, jour_semaine) and (
+            agent.id_agent not in ids_en_conge
+        )
         statut_jour = dernier_pointage.get(agent.id_agent)
         est_retardataire = agent.id_agent in ids_retardataires
         nom_s = services_par_id.get(agent.id_service, "Sans service")
@@ -297,7 +318,11 @@ def classement_agents(
             )
         jours_ouvres = jours_ouvres_par_service[agent.id_service]
         heures = rapport_service.heures_travaillees_agent(db, agent.id_agent, date_debut, date_fin)
-        indicateurs = rapport_service.indicateurs_agent(agent, jours_ouvres, heures, compte_anomalies)
+        jours_pointes = rapport_service.jours_pointes_agent(db, agent.id_agent, date_debut, date_fin)
+        jours_conge = rapport_service.jours_conge_agent(db, agent.id_agent, agent.id_service, date_debut, date_fin)
+        indicateurs = rapport_service.indicateurs_agent(
+            agent, jours_ouvres, heures, compte_anomalies, jours_pointes, jours_conge
+        )
         resultats.append({
             **indicateurs,
             "id_service": agent.id_service,
@@ -305,7 +330,16 @@ def classement_agents(
         })
 
     if critere == "ponctualite":
-        resultats.sort(key=lambda a: (-(a["taux_presence"] or 0), a["nombre_retards"]))
+        # Deux exclusions pour que ce classement ne contienne que des agents
+        # réellement ponctuels (il alimente la fiche "Ponctualité exemplaire"
+        # du tableau de bord) :
+        #   - `jours_pointes == 0` : un agent qui n'a jamais pointé sur la
+        #     période n'a mécaniquement aucun retard, sans être ponctuel ;
+        #   - `nombre_retards > 0` : un agent ayant enregistré au moins un
+        #     retard sur la période n'a pas sa place dans un classement des
+        #     agents les plus ponctuels.
+        resultats = [a for a in resultats if a["jours_pointes"] > 0 and a["nombre_retards"] == 0]
+        resultats.sort(key=lambda a: (-(a["taux_presence"] or 0), a["nombre_absences"], -a["jours_pointes"]))
     elif critere == "absences":
         resultats.sort(key=lambda a: (-a["nombre_absences"], -a["nombre_retards"]))
     else:
@@ -381,20 +415,18 @@ def prevision(
     la formulation du cahier des charges ("méthodes statistiques simples").
     """
     date_reference = date_reference or (date_.today() - timedelta(days=1))
-    buckets_historique = _buckets_recents(granularite, date_reference, nombre_periodes_historique)
-
-    historique = []
-    points_regression: List[Tuple[int, float]] = []
-    for index, (debut, _fin) in enumerate(buckets_historique):
-        indicateurs = rapport_service.calculer_indicateurs(db, granularite, id_service, date_reference=debut)
-        taux = indicateurs["globaux"]["taux_presence"]
-        historique.append({
-            "periode_debut": indicateurs["periode_debut"],
-            "periode_fin": indicateurs["periode_fin"],
-            "globaux": indicateurs["globaux"],
-        })
-        if taux is not None:
-            points_regression.append((index, taux))
+    buckets_historique, historique, points_regression = _historique_ml_adaptatif(
+        db, granularite, id_service, nombre_periodes_historique, date_reference
+    )
+    if not buckets_historique:
+        return {
+            "granularite": granularite,
+            "id_service": id_service,
+            "methode": "aucune",
+            "historique": [],
+            "prevision": [],
+            "avertissement": "Aucune donnée de présence exploitable sur l'historique disponible.",
+        }
 
     coefficients = _regression_lineaire(points_regression)
 
@@ -431,6 +463,68 @@ def prevision(
     }
 
 
+def _serie_historique(
+    db: Session,
+    granularite: TypePeriode,
+    id_service: Optional[int],
+    buckets: List[Tuple[date_, date_]],
+) -> Tuple[List[dict], List[Tuple[int, float]]]:
+    """Indicateurs période par période + série (indice, taux_presence) exploitable par un modèle."""
+    historique: List[dict] = []
+    points: List[Tuple[int, float]] = []
+    for index, (debut, _fin) in enumerate(buckets):
+        indicateurs = rapport_service.calculer_indicateurs(db, granularite, id_service, date_reference=debut)
+        historique.append({
+            "periode_debut": indicateurs["periode_debut"],
+            "periode_fin": indicateurs["periode_fin"],
+            "globaux": indicateurs["globaux"],
+        })
+        taux = indicateurs["globaux"]["taux_presence"]
+        if taux is not None:
+            points.append((index, taux))
+    return historique, points
+
+
+def _historique_ml_adaptatif(
+    db: Session,
+    granularite: TypePeriode,
+    id_service: Optional[int],
+    nombre_periodes_demande: int,
+    date_reference: date_,
+) -> Tuple[List[Tuple[date_, date_]], List[dict], List[Tuple[int, float]]]:
+    """
+    Calibre automatiquement la profondeur d'historique fournie au modèle ML.
+
+    Le nombre de périodes demandé par l'appelant n'est qu'un point de départ :
+    selon l'ancienneté des pointages, ces périodes peuvent être en grande
+    partie vides (taux de présence indisponible), auquel cas le modèle ML
+    n'avait pas assez de matière et retombait toujours sur la régression
+    linéaire. On élargit donc la fenêtre par paliers tant que le nombre de
+    points exploitables reste sous `_ML_MIN_POINTS`, jusqu'à
+    `_ML_MAX_PERIODES`. À l'inverse, on ne conserve que les
+    `_ML_MAX_PERIODES` périodes les plus récentes : au-delà, l'historique
+    ancien dilue le signal récent sans améliorer la prévision.
+    """
+    nombre = max(2, min(nombre_periodes_demande, _ML_MAX_PERIODES))
+    buckets = _buckets_recents(granularite, date_reference, nombre)
+    historique, points = _serie_historique(db, granularite, id_service, buckets)
+
+    while len(points) < _ML_MIN_POINTS and nombre < _ML_MAX_PERIODES:
+        nombre = min(_ML_MAX_PERIODES, nombre + max(4, _ML_MIN_POINTS - len(points)))
+        buckets = _buckets_recents(granularite, date_reference, nombre)
+        historique, points = _serie_historique(db, granularite, id_service, buckets)
+
+    # Trop de périodes vides en tête de série : on tronque avant le premier
+    # point exploitable pour ne pas nourrir le modèle de trous.
+    if points and points[0][0] > 0:
+        decalage = points[0][0]
+        buckets = buckets[decalage:]
+        historique = historique[decalage:]
+        points = [(i - decalage, v) for i, v in points]
+
+    return buckets, historique, points
+
+
 def prevision_ml(
     db: Session,
     granularite: TypePeriode,
@@ -450,20 +544,18 @@ def prevision_ml(
     indique toujours ce qui a réellement été utilisé.
     """
     date_reference = date_reference or (date_.today() - timedelta(days=1))
-    buckets_historique = _buckets_recents(granularite, date_reference, nombre_periodes_historique)
-
-    historique = []
-    points_regression: List[Tuple[int, float]] = []
-    for index, (debut, _fin) in enumerate(buckets_historique):
-        indicateurs = rapport_service.calculer_indicateurs(db, granularite, id_service, date_reference=debut)
-        taux = indicateurs["globaux"]["taux_presence"]
-        historique.append({
-            "periode_debut": indicateurs["periode_debut"],
-            "periode_fin": indicateurs["periode_fin"],
-            "globaux": indicateurs["globaux"],
-        })
-        if taux is not None:
-            points_regression.append((index, taux))
+    buckets_historique, historique, points_regression = _historique_ml_adaptatif(
+        db, granularite, id_service, nombre_periodes_historique, date_reference
+    )
+    if not buckets_historique:
+        return {
+            "granularite": granularite,
+            "id_service": id_service,
+            "methode": "aucune",
+            "historique": [],
+            "prevision": [],
+            "avertissement": "Aucune donnée de présence exploitable sur l'historique disponible.",
+        }
 
     methode = "gradient_boosting_ml"
     valeurs_predites = prevision_ml_module_predire(points_regression, horizon)
@@ -517,7 +609,7 @@ def prevision_ml(
 
 def prevision_ml_module_predire(points_regression: List[Tuple[int, float]], horizon: int) -> Optional[List[float]]:
     """Petit indirect pour garder un nom explicite au niveau de l'appel ci-dessus."""
-    return prevision_ml.entrainer_et_predire(points_regression, horizon)
+    return prevision_ml_module.entrainer_et_predire(points_regression, horizon)
 
 
 def detection_anomalies_ml(
@@ -558,7 +650,17 @@ def detection_anomalies_ml(
             heures = rapport_service.heures_travaillees_agent(
                 db, agent.id_agent, indicateurs["periode_debut"], indicateurs["periode_fin"]
             )
-            profils.append(rapport_service.indicateurs_agent(agent, jours_ouvres, heures, compte_anomalies))
+            jours_pointes = rapport_service.jours_pointes_agent(
+                db, agent.id_agent, indicateurs["periode_debut"], indicateurs["periode_fin"]
+            )
+            jours_conge = rapport_service.jours_conge_agent(
+                db, agent.id_agent, agent.id_service, indicateurs["periode_debut"], indicateurs["periode_fin"]
+            )
+            profils.append(
+                rapport_service.indicateurs_agent(
+                    agent, jours_ouvres, heures, compte_anomalies, jours_pointes, jours_conge
+                )
+            )
 
     return anomalies_ml.detecter(profils)
 
@@ -585,7 +687,20 @@ def score_risque_agents(
         return []
 
     date_reference = date_reference or (date_.today() - timedelta(days=1))
-    buckets = _buckets_recents(TypePeriode.MOIS, date_reference, nombre_mois_historique + 1)
+
+    # Calibrage automatique de la profondeur d'historique : le classifieur a
+    # besoin d'au moins `_ML_MIN_ECHANTILLONS` paires (mois M -> mois M+1),
+    # tous agents confondus. Avec peu d'agents, `nombre_mois_historique` seul
+    # ne suffisait pas et le score retombait toujours sur l'heuristique ;
+    # avec beaucoup d'agents, il faisait au contraire calculer bien plus de
+    # mois que nécessaire. On dimensionne donc la fenêtre à partir de
+    # l'effectif du périmètre, en la bornant des deux côtés.
+    mois_necessaires = -(-_ML_MIN_ECHANTILLONS // max(1, len(agents))) + 1
+    mois_retenus = max(nombre_mois_historique, mois_necessaires)
+    mois_retenus = min(mois_retenus, _ML_MAX_MOIS_RISQUE, max(2, _ML_MAX_CALCULS_RISQUE // max(1, len(agents))))
+    mois_retenus = max(2, mois_retenus)
+
+    buckets = _buckets_recents(TypePeriode.MOIS, date_reference, mois_retenus + 1)
     noms_services = {s.id_service: s.nom_service for s in db.execute(select(Service)).scalars().all()}
 
     historique_par_agent: Dict[int, List[dict]] = {agent.id_agent: [] for agent in agents}
@@ -600,8 +715,12 @@ def score_risque_agents(
                 )
             jours_ouvres = jours_ouvres_par_service[agent.id_service]
             heures = rapport_service.heures_travaillees_agent(db, agent.id_agent, debut, fin)
+            jours_pointes = rapport_service.jours_pointes_agent(db, agent.id_agent, debut, fin)
+            jours_conge = rapport_service.jours_conge_agent(db, agent.id_agent, agent.id_service, debut, fin)
             historique_par_agent[agent.id_agent].append(
-                rapport_service.indicateurs_agent(agent, jours_ouvres, heures, compte_anomalies)
+                rapport_service.indicateurs_agent(
+                    agent, jours_ouvres, heures, compte_anomalies, jours_pointes, jours_conge
+                )
             )
 
     modele = risque_agents.entrainer(historique_par_agent)

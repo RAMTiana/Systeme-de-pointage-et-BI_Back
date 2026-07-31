@@ -45,8 +45,9 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.config import settings
 from app.models.agent import Agent
 from app.models.anomalie import Anomalie
-from app.models.enums import FormatRapport, JourSemaine, StatutAgent, StatutPointage, TypeAnomalie, TypePeriode, \
-    TypePointage
+from app.models.conge import Conge
+from app.models.enums import FormatRapport, JourSemaine, StatutAgent, StatutConge, StatutPointage, TypeAnomalie, \
+    TypePeriode, TypePointage
 from app.models.horaire_reference import HoraireReference
 from app.models.pointage import Pointage
 from app.models.rapport import Rapport
@@ -156,6 +157,63 @@ def heures_travaillees_agent(db: Session, id_agent: int, date_debut: date_, date
     return round(total_heures, 2)
 
 
+def jours_pointes_agent(db: Session, id_agent: int, date_debut: date_, date_fin: date_) -> int:
+    """
+    Nombre de jours distincts de la période où l'agent a enregistré au moins
+    un pointage d'entrée valide.
+
+    Sert de garde-fou pour les indicateurs de ponctualité/présence : le
+    dénombrement `jours_presents` (= jours_ouvres - nombre_absences) suppose
+    que toute journée non explicitement signalée comme "absence" (table
+    `anomalie`) correspond à une présence réelle. Or la détection d'anomalies
+    est un traitement différé : un agent qui n'a encore jamais pointé (fiche
+    tout juste créée, badge non activé, etc.) n'aura pas encore d'anomalie
+    "absence" à son nom et se retrouverait donc compté comme présent à 100 %.
+    `jours_pointes_agent` reflète l'activité réellement observée dans la
+    table `pointage`, indépendamment du traitement d'anomalies.
+    """
+    stmt = select(func.date(Pointage.date_heure)).where(
+        Pointage.id_agent == id_agent,
+        Pointage.type_pointage == TypePointage.ENTREE,
+        Pointage.statut == StatutPointage.VALIDE,
+        Pointage.date_heure >= datetime.combine(date_debut, datetime.min.time()),
+        Pointage.date_heure <= datetime.combine(date_fin, datetime.max.time()),
+    ).distinct()
+    return len(db.execute(stmt).all())
+
+
+def jours_conge_agent(db: Session, id_agent: int, id_service: Optional[int], date_debut: date_, date_fin: date_) -> int:
+    """
+    Nombre de jours ouvrés de la période où l'agent est couvert par un congé
+    ACTIF (il n'est donc pas tenu de pointer ces jours-là — cf. la même
+    exclusion appliquée par `anomalie_service.detecter_absences`). Sert à
+    calculer un dénominateur de présence qui ne pénalise pas les congés
+    légitimes tout en restant exact indépendamment du job de détection
+    d'absences (cf. `jours_pointes_agent`).
+    """
+    stmt_conges = select(Conge.date_debut, Conge.date_fin).where(
+        Conge.id_agent == id_agent,
+        Conge.statut == StatutConge.ACTIF,
+        Conge.date_debut <= date_fin,
+        Conge.date_fin >= date_debut,
+    )
+    intervalles = db.execute(stmt_conges).all()
+    if not intervalles:
+        return 0
+
+    stmt_horaire = select(HoraireReference.jour_semaine).where(HoraireReference.id_service == id_service).distinct()
+    jours_travailles = set(db.execute(stmt_horaire).scalars().all())
+
+    total = 0
+    jour = date_debut
+    while jour <= date_fin:
+        est_ouvre = (_JOURS_PAR_INDEX[jour.weekday()] in jours_travailles) if jours_travailles else True
+        if est_ouvre and any(debut_c <= jour <= fin_c for debut_c, fin_c in intervalles):
+            total += 1
+        jour += timedelta(days=1)
+    return total
+
+
 def compter_anomalies_par_type(
     db: Session, ids_agents: List[int], date_debut: date_, date_fin: date_
 ) -> Dict[Tuple[int, TypeAnomalie], int]:
@@ -178,20 +236,53 @@ def indicateurs_agent(
     jours_ouvres: int,
     heures_travaillees: float,
     compte_anomalies: Dict[Tuple[int, TypeAnomalie], int],
+    jours_pointes: int = 0,
+    jours_conge: int = 0,
 ) -> dict:
+    """
+    Calcule les indicateurs de présence d'un agent sur la période.
+
+    `jours_presents` / `taux_presence` sont dérivés des données réelles :
+    - `jours_pointes` (jours où l'agent a effectivement pointé, cf.
+      `jours_pointes_agent`) plutôt que d'une soustraction
+      `jours_ouvres - nombre_absences`, qui dépendait du job différé
+      `anomalie_service.detecter_absences` (exécuté en fin de journée ou le
+      lendemain) : tant que ce job n'était pas passé, tout jour non encore
+      signalé "absence" comptait comme présent, ce qui gonflait
+      artificiellement le taux de présence du jour même / de la période en
+      cours.
+    - `jours_conge` (jours ouvrés couverts par un congé actif, cf.
+      `jours_conge_agent`) est retranché du dénominateur : un agent en congé
+      n'est pas tenu de pointer, ce jour ne doit donc ni compter contre lui
+      ni gonfler artificiellement son taux de présence.
+
+    `nombre_absences` reste calculé à partir de la table `anomalie` (registre
+    officiel, éventuellement justifié) et n'est pas utilisé pour ce calcul.
+    """
     nombre_retards = compte_anomalies.get((agent.id_agent, TypeAnomalie.RETARD), 0)
     nombre_absences = compte_anomalies.get((agent.id_agent, TypeAnomalie.ABSENCE), 0)
     nombre_departs = compte_anomalies.get((agent.id_agent, TypeAnomalie.DEPART_ANTICIPE), 0)
-    jours_presents = max(jours_ouvres - nombre_absences, 0)
-    taux_presence = round(jours_presents / jours_ouvres, 4) if jours_ouvres > 0 else None
+
+    jours_conge = min(jours_conge, jours_ouvres)
+    jours_ouvres_effectifs = max(jours_ouvres - jours_conge, 0)
+    jours_presents = jours_pointes
+    taux_presence = (
+        round(jours_presents / jours_ouvres_effectifs, 4) if jours_ouvres_effectifs > 0 else None
+    )
 
     return {
         "id_agent": agent.id_agent,
         "matricule": agent.matricule,
         "nom": agent.nom,
         "prenom": agent.prenom,
-        "jours_ouvres": jours_ouvres,
+        # Jours ouvrés nets de congé — dénominateur exact du taux de présence.
+        "jours_ouvres": jours_ouvres_effectifs,
         "jours_presents": jours_presents,
+        # Jours réellement pointés (table `pointage`) — identique à
+        # `jours_presents` ci-dessus, exposé séparément pour compatibilité
+        # avec les usages existants (ex. classement de ponctualité).
+        "jours_pointes": jours_pointes,
+        "jours_conge": jours_conge,
         "nombre_retards": nombre_retards,
         "nombre_absences": nombre_absences,
         "nombre_departs_anticipes": nombre_departs,
@@ -251,7 +342,12 @@ def calculer_indicateurs(
 
         detail_agents = [
             indicateurs_agent(
-                agent, jours_ouvres, heures_travaillees_agent(db, agent.id_agent, date_debut, date_fin), compte_anomalies
+                agent,
+                jours_ouvres,
+                heures_travaillees_agent(db, agent.id_agent, date_debut, date_fin),
+                compte_anomalies,
+                jours_pointes_agent(db, agent.id_agent, date_debut, date_fin),
+                jours_conge_agent(db, agent.id_agent, id_service, date_debut, date_fin),
             )
             for agent in agents
         ]
@@ -288,7 +384,12 @@ def calculer_indicateurs(
 
         indicateurs_agents_service = [
             indicateurs_agent(
-                agent, jours_ouvres, heures_travaillees_agent(db, agent.id_agent, date_debut, date_fin), compte_anomalies
+                agent,
+                jours_ouvres,
+                heures_travaillees_agent(db, agent.id_agent, date_debut, date_fin),
+                compte_anomalies,
+                jours_pointes_agent(db, agent.id_agent, date_debut, date_fin),
+                jours_conge_agent(db, agent.id_agent, service.id_service, date_debut, date_fin),
             )
             for agent in agents
         ]
@@ -298,7 +399,7 @@ def calculer_indicateurs(
             "id_service": service.id_service,
             "nom_service": service.nom_service,
             "nombre_agents": agrege["nombre_agents"],
-            "jours_ouvres": jours_ouvres,
+            "jours_ouvres": agrege["jours_ouvres"],
             "jours_presents": agrege["jours_presents"],
             "nombre_retards": agrege["nombre_retards"],
             "nombre_absences": agrege["nombre_absences"],
