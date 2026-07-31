@@ -672,10 +672,13 @@ def score_risque_agents(
     date_reference: Optional[date_] = None,
 ) -> List[dict]:
     """
-    Entraîne un classifieur sur l'historique mensuel de tous les agents du
-    périmètre (mois M -> anomalie constatée au mois M+1), puis prédit, pour
-    chaque agent, sa probabilité de connaître une anomalie sur le mois à
-    venir à partir de son dernier mois complet.
+    Entraîne une régression sur l'historique mensuel de tous les agents du
+    périmètre (mois M -> taux d'incident constaté au mois M+1), puis dérive,
+    pour chaque agent, sa probabilité de connaître au moins un incident sur
+    le mois à venir à partir de son dernier mois complet (cf. note dans
+    `risque_agents` sur le choix de la régression plutôt qu'une
+    classification binaire, plus discriminante entre agents à risques réels
+    différents).
 
     Repli heuristique (sans ML, cf. `risque_agents.score_heuristique`) si
     l'historique global est trop court pour entraîner un modèle fiable — le
@@ -728,13 +731,14 @@ def score_risque_agents(
 
     resultats = []
     for agent in agents:
-        dernier_mois = historique_par_agent[agent.id_agent][-1]
+        historique_agent = historique_par_agent[agent.id_agent]
+        dernier_mois = historique_agent[-1]
         if dernier_mois["taux_presence"] is None:
             continue
         if modele is not None:
             score = risque_agents.predire_probabilite(modele, dernier_mois)
         else:
-            score = risque_agents.score_heuristique(dernier_mois)
+            score = risque_agents.score_heuristique(historique_agent)
         resultats.append({
             "id_agent": agent.id_agent,
             "matricule": agent.matricule,

@@ -181,7 +181,14 @@ def _repondre_prevision(db: Session, utilisateur: Utilisateur, id_service: Optio
             "donnees": None,
         }
 
-    resultat = bi_service.prevision(
+    # Même fonction que celle utilisée par le tableau de bord BI
+    # (`biService.previsionMl` côté frontend) : évite qu'une même période
+    # donne deux tendances différentes selon qu'on la consulte via le
+    # dashboard ou via l'assistant (l'ancienne version de l'assistant
+    # appelait `bi_service.prevision`, la régression linéaire simple, alors
+    # que le dashboard utilise déjà la variante gradient boosting avec repli
+    # automatique — source d'incohérence entre les deux vues).
+    resultat = bi_service.prevision_ml(
         db, TypePeriode.MOIS, id_service=id_service, nombre_periodes_historique=6, horizon=3
     )
     points = resultat["prevision"]
@@ -205,8 +212,13 @@ def _repondre_prevision(db: Session, utilisateur: Utilisateur, id_service: Optio
             for p in points
             if p.get("taux_presence_estime") is not None
         )
+        methode_lisible = (
+            "un modèle de gradient boosting entraîné sur l'historique récent"
+            if resultat["methode"] == "gradient_boosting_ml"
+            else "une régression linéaire simple (repli, historique insuffisant pour le modèle ML)"
+        )
         texte = (
-            f"D'après la régression linéaire sur les 6 derniers mois, le taux de présence "
+            f"D'après {methode_lisible} sur les 6 derniers mois, le taux de présence "
             f"est estimé {tendance} sur les 3 prochains mois : {details}.\n\n"
             f"{resultat['avertissement']}"
         )
@@ -241,11 +253,21 @@ def _repondre_risque(db: Session, utilisateur: Utilisateur, id_service: Optional
         f"{i+1}. {a['prenom']} {a['nom']} — risque estimé : {round(a['score_risque'] * 100, 1)} %"
         for i, a in enumerate(top)
     ]
-    methode = top[0]["methode"]
+    methode_brute = top[0]["methode"]
+    if methode_brute == "gradient_boosting_ml":
+        methode_lisible = "modèle prédictif (gradient boosting) entraîné sur l'historique du périmètre"
+    else:
+        methode_lisible = (
+            "estimation simplifiée sans apprentissage automatique, faute d'historique suffisant "
+            "sur ce périmètre pour entraîner un modèle fiable"
+        )
+    reste = len(scores) - len(top)
+    complement = f" ({reste} autre(s) agent(s) évalué(s) avec un score plus faible.)" if reste > 0 else ""
     texte = (
-        "Agents avec le risque estimé le plus élevé de retard ou d'absence sur la période à venir :\n"
+        f"Sur {len(scores)} agent(s) évalué(s), voici ceux avec le risque estimé le plus élevé "
+        "de retard ou d'absence sur la période à venir :\n"
         + "\n".join(lignes)
-        + f"\n\n(méthode : {methode})"
+        + f"{complement}\n\n(méthode : {methode_lisible})"
     )
     return {"reponse": texte, "donnees": {"scores": scores}}
 
