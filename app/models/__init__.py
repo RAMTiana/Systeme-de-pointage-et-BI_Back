@@ -26,6 +26,7 @@ from app.models.journal_audit import JournalAudit  # noqa: F401
 from app.models.horaire_reference import HoraireReference  # noqa: F401
 from app.models.parametre_systeme import ParametreSysteme  # noqa: F401
 from app.models.conge import Conge  # noqa: F401
+from app.models.absence import Absence  # noqa: F401
 
 __all__ = [
     "Base",
@@ -48,4 +49,5 @@ __all__ = [
     "HoraireReference",
     "ParametreSysteme",
     "Conge",
+    "Absence",
 ]

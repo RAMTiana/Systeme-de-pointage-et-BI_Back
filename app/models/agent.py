@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from app.models.pointage import Pointage
     from app.models.anomalie import Anomalie
     from app.models.conge import Conge
+    from app.models.absence import Absence
 
 
 class Agent(Base):
@@ -49,6 +50,7 @@ class Agent(Base):
     pointages: Mapped[List["Pointage"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     anomalies: Mapped[List["Anomalie"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     conges: Mapped[List["Conge"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
+    absences: Mapped[List["Absence"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Agent id={self.id_agent} matricule={self.matricule!r}>"

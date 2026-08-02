@@ -137,3 +137,17 @@ class StatutConge(str, enum.Enum):
     """
     ACTIF = "actif"
     ANNULE = "annule"
+
+
+class StatutAbsence(str, enum.Enum):
+    """
+    Même logique que `StatutConge` (cf. sa docstring) : l'administration
+    centrale dispose déjà de sa propre application de gestion des absences
+    de tous les agents publics — le SRB Haute Matsiatra n'est pas l'autorité
+    de validation. Ce statut ne fait qu'enregistrer, côté SRB, qu'une
+    absence ponctuelle est déjà connue/justifiée au niveau central, pour que
+    `anomalie_service.detecter_absences` exclue l'agent concerné plutôt que
+    de le signaler à tort comme anomalie.
+    """
+    ACTIF = "actif"
+    ANNULE = "annule"
