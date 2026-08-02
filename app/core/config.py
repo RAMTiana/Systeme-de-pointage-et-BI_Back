@@ -1,10 +1,10 @@
 """
 Configuration centralisée de l'application.
-
+ 
 Toutes les variables sont lues depuis l'environnement (fichier .env en local,
 variables d'environnement réelles en production). Ne jamais committer le
 fichier .env — seul .env.example doit être versionné.
-
+ 
 En mode production (APP_ENV=production), le démarrage échoue si une des
 valeurs sensibles est laissée à sa valeur par défaut de développement :
 c'est un garde-fou contre les déploiements accidentels avec des secrets
@@ -12,19 +12,19 @@ publics.
 """
 from functools import lru_cache
 from typing import List
-
+ 
 from pydantic import computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
+ 
+ 
 _INSECURE_DEFAULTS = {
     "SECRET_KEY": {"change-me", "change-me-with-a-long-random-string"},
     "DEVICE_API_KEY": {"change-me-device-key"},
     "JOB_API_KEY": {"change-me-job-key"},
     "POSTGRES_PASSWORD": {"changeme", "srb_password", "postgres"},
 }
-
-
+ 
+ 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -32,13 +32,13 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
-
+ 
     # --- Application ---
     APP_NAME: str = "SRB Haute Matsiatra - API"
     APP_ENV: str = "development"
     DEBUG: bool = True
     API_V1_PREFIX: str = "/api/v1"
-
+ 
     # --- Base de données ---
     POSTGRES_USER: str = "srb_user"
     POSTGRES_PASSWORD: str = "changeme"
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "srb_haute_matsiatra"
     DATABASE_URL: str | None = None
-
+ 
     # --- Sécurité / JWT ---
     SECRET_KEY: str = "change-me"
     ALGORITHM: str = "HS256"
@@ -54,33 +54,33 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     JWT_ISSUER: str = "srb-haute-matsiatra"
     JWT_AUDIENCE: str = "srb-frontend"
-
+ 
     # --- Politique mot de passe ---
     PASSWORD_MIN_LENGTH: int = 12
-
+ 
     # --- Verrouillage compte après tentatives échouées ---
     LOCKOUT_MAX_ATTEMPTS: int = 5
     LOCKOUT_WINDOW_SECONDS: int = 900          # fenêtre glissante 15 min
     LOCKOUT_DURATION_SECONDS: int = 900        # blocage 15 min
-
+ 
     # --- Rate limiting (slowapi) ---
     RATE_LIMIT_DEFAULT: str = "120/minute"
     RATE_LIMIT_LOGIN: str = "10/minute"
     RATE_LIMIT_PASSWORD_RESET: str = "5/minute"
-
+ 
     # --- Redis ---
     REDIS_URL: str = "redis://localhost:6379/0"
-
+ 
     # --- Google Sign-In ---
     GOOGLE_CLIENT_ID: str | None = None
-
+ 
     # --- CORS ---
     CORS_ORIGINS: str = "http://localhost:4200"
-
+ 
     # --- Poste de pointage & job cron ---
     DEVICE_API_KEY: str = "change-me-device-key"
     JOB_API_KEY: str = "change-me-job-key"
-
+ 
     # --- WebAuthn (biométrie d'appareil : Touch ID / Windows Hello / empreinte) ---
     # RP_ID doit être le nom d'hôte (sans schéma ni port) du front-office ;
     # ORIGIN doit être l'origine complète (schéma + hôte + port) depuis laquelle
@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     WEBAUTHN_RP_ID: str = "localhost"
     WEBAUTHN_RP_NAME: str = "SRB Haute Matsiatra"
     WEBAUTHN_ORIGIN: str = "http://localhost:4200"
-
+ 
     # --- SMTP (alertes) ---
     SMTP_HOST: str | None = None
     SMTP_PORT: int = 587
@@ -96,14 +96,15 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str | None = None
     SMTP_USE_TLS: bool = True
     SMTP_FROM_EMAIL: str = "no-reply@srb-hautematsiatra.mg"
-
+    SMTP_FROM_NAME: str = "SRB Haute Matsiatra"
+ 
     # --- SMS (webhook) ---
     SMS_WEBHOOK_URL: str | None = None
     SMS_WEBHOOK_API_KEY: str | None = None
-
+ 
     # --- Rapports ---
     REPORTS_DIR: str = "storage/rapports"
-
+ 
     @computed_field
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
@@ -113,12 +114,12 @@ class Settings(BaseSettings):
             f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
-
+ 
     @computed_field
     @property
     def CORS_ORIGINS_LIST(self) -> List[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
-
+ 
     @model_validator(mode="after")
     def _refuser_defauts_en_production(self) -> "Settings":
         if self.APP_ENV != "production":
@@ -141,11 +142,12 @@ class Settings(BaseSettings):
                 + ". Corrigez les variables d'environnement avant de démarrer."
             )
         return self
-
-
+ 
+ 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
-
+ 
+ 
 settings = get_settings()
+ 

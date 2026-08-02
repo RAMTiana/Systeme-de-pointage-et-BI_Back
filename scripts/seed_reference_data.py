@@ -65,6 +65,7 @@ PERMISSIONS: List[Tuple[str, str]] = [
     ("consulter_bi", "Accéder au tableau de bord décisionnel"),
     ("valider_roles", "Valider les rôles et permissions des agents"),
     ("gerer_conges", "Enregistrer et annuler les congés des agents (registre local, sans approbation)"),
+    ("gerer_absences", "Enregistrer et annuler les absences des agents (registre local, sans approbation)"),
 ]
 
 # ---------------------------------------------------------------------
@@ -96,12 +97,18 @@ PERMISSIONS: List[Tuple[str, str]] = [
 #     commun à tous les ministères) — `gerer_conges` va donc uniquement à la
 #     Secrétaire, même nature de tâche que `gerer_agents` (simple registre
 #     local pour que la détection d'absence exclue les agents en congé).
+#   - Absences (module ajouté) : même logique que Congés — l'administration
+#     centrale dispose déjà de sa propre application de gestion des absences
+#     de tous les agents publics, commune à tous les ministères ; `gerer_absences`
+#     va donc uniquement à la Secrétaire, simple registre local pour que la
+#     détection d'absence exclue les agents déjà couverts par un enregistrement.
 # ---------------------------------------------------------------------
 AFFECTATIONS: Dict[str, List[str]] = {
     "Administrateur": [nom for nom, _ in PERMISSIONS],
     "Chef de service": ["valider_roles", "consulter_bi"],
     "Secretaire": [
-        "gerer_agents", "gerer_services", "traiter_anomalies", "generer_rapports", "gerer_conges",
+        "gerer_agents", "gerer_services", "traiter_anomalies", "generer_rapports",
+        "gerer_conges", "gerer_absences",
     ],
 }
 

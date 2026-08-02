@@ -1,7 +1,7 @@
 """
 Connecteurs techniques d'envoi des alertes (Processus 3 — "Envoyer alerte
 automatique", email et/ou SMS vers la hiérarchie).
-
+ 
 Ce module est volontairement isolé de la logique métier (app/services/
 alerte_service.py) : il ne sait qu'envoyer un message, il ne sait pas qui
 doit le recevoir ni pourquoi. Conformément à la conception BPMN
@@ -9,7 +9,7 @@ doit le recevoir ni pourquoi. Conformément à la conception BPMN
 la phase d'implémentation"), ce backend fournit un connecteur SMTP réel
 pour l'email et un connecteur webhook générique pour le SMS (le
 fournisseur SMS n'étant pas figé au cahier des charges).
-
+ 
 Principe : ne jamais simuler un succès. Si un canal n'est pas configuré
 (pas de SMTP_HOST / pas de SMS_WEBHOOK_URL), l'envoi échoue proprement
 (retourne False) plutôt que de faire croire qu'une notification est
@@ -18,14 +18,16 @@ partie alors qu'aucune infrastructure n'est branchée.
 import logging
 import smtplib
 from email.message import EmailMessage
-
+ 
 import requests
-
+ 
+from email.utils import formataddr
+ 
 from app.core.config import settings
-
+ 
 logger = logging.getLogger("srb.notifications")
-
-
+ 
+ 
 def envoyer_email(destinataire: str, sujet: str, corps: str) -> bool:
     """Envoie un email via SMTP. Retourne False (sans lever d'exception) en cas d'échec."""
     if not settings.SMTP_HOST:
@@ -34,13 +36,13 @@ def envoyer_email(destinataire: str, sujet: str, corps: str) -> bool:
             destinataire,
         )
         return False
-
+ 
     message = EmailMessage()
     message["Subject"] = sujet
-    message["From"] = settings.SMTP_FROM_EMAIL
+    message["From"] = formataddr((settings.SMTP_FROM_NAME, settings.SMTP_FROM_EMAIL))
     message["To"] = destinataire
     message.set_content(corps)
-
+ 
     try:
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as serveur:
             if settings.SMTP_USE_TLS:
@@ -52,8 +54,8 @@ def envoyer_email(destinataire: str, sujet: str, corps: str) -> bool:
     except Exception:
         logger.exception("Échec de l'envoi de l'alerte email à %s.", destinataire)
         return False
-
-
+ 
+ 
 def envoyer_sms(destinataire: str, message: str) -> bool:
     """Envoie un SMS via un webhook générique. Retourne False (sans lever d'exception) en cas d'échec."""
     if not settings.SMS_WEBHOOK_URL:
@@ -62,11 +64,11 @@ def envoyer_sms(destinataire: str, message: str) -> bool:
             destinataire,
         )
         return False
-
+ 
     headers = {}
     if settings.SMS_WEBHOOK_API_KEY:
         headers["Authorization"] = f"Bearer {settings.SMS_WEBHOOK_API_KEY}"
-
+ 
     try:
         reponse = requests.post(
             settings.SMS_WEBHOOK_URL,
@@ -79,3 +81,4 @@ def envoyer_sms(destinataire: str, message: str) -> bool:
     except Exception:
         logger.exception("Échec de l'envoi de l'alerte SMS à %s.", destinataire)
         return False
+ 
