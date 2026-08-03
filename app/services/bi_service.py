@@ -35,7 +35,7 @@ from app.models.enums import JourSemaine, StatutAgent, StatutPointage, TypeAnoma
 from app.models.horaire_reference import HoraireReference
 from app.models.pointage import Pointage
 from app.models.service import Service
-from app.services import conge_service, rapport_service
+from app.services import conge_service, horaire_service, rapport_service
 from app.ml import anomalies_ml, risque_agents
 # Alias explicite : le service expose lui aussi une fonction `prevision_ml`,
 # qui masquerait le module importé sous le même nom (AttributeError -> 500).
@@ -80,7 +80,12 @@ def _agents_du_perimetre(db: Session, id_service: Optional[int]) -> List[Agent]:
 def _service_travaille_ce_jour(jours_horaire: Dict[Optional[int], set], id_service: Optional[int], jour_semaine: JourSemaine) -> bool:
     jours = jours_horaire.get(id_service)
     if not jours:
-        return True  # pas d'horaire de référence -> pas de base pour exclure ce jour
+        # Pas d'horaire de référence configuré pour ce service : on applique
+        # les jours ouvrés par défaut (lundi-vendredi), cohérent avec
+        # horaire_service.horaire_effectif() et la détection d'absences —
+        # le week-end n'est jamais un jour attendu tant qu'il n'est pas
+        # explicitement configuré comme travaillé.
+        return jour_semaine in horaire_service.JOURS_OUVRES_PAR_DEFAUT
     return jour_semaine in jours
 
 
