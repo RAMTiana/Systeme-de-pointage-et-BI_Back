@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from app.api.v1 import api_router
 from app.core.config import settings
 from app.core.redis_client import get_redis
+from app.core.scheduler import arreter_scheduler, demarrer_scheduler
 from app.core.security_headers import SecurityHeadersMiddleware
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,23 @@ def verifier_redis_au_demarrage() -> None:
         )
     else:
         logger.info("Connexion Redis OK (%s).", settings.REDIS_URL)
+
+
+@app.on_event("startup")
+def demarrer_taches_planifiees() -> None:
+    """
+    Démarre le scheduler in-process qui déclenche automatiquement
+    `detecter_absences` chaque jour (cf. app/core/scheduler.py). Sans cela,
+    aucune anomalie de type `absence` n'est jamais créée : la route
+    `POST /anomalies/detecter-absences` existe, mais rien ne l'appelait
+    jusqu'ici (elle attendait un cron externe jamais configuré).
+    """
+    demarrer_scheduler()
+
+
+@app.on_event("shutdown")
+def arreter_taches_planifiees() -> None:
+    arreter_scheduler()
 
 
 @app.get("/", tags=["Santé"])

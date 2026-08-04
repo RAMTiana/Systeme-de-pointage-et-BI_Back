@@ -49,6 +49,11 @@ requests==2.32.3
 # --- Divers ---
 python-dateutil==2.9.0.post0
 
+# --- Tâches planifiées (détection automatique des absences, cf.
+#     app/core/scheduler.py) : exécuté dans le process de l'API, pas de
+#     dépendance à un cron système externe ---
+apscheduler==3.10.4
+
 # --- Machine learning (module BI : prévision, anomalies, score de risque ;
 #     assistant IA : classification d'intention) — 100% local, aucun appel
 #     à une API tierce ---
