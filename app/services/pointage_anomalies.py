@@ -52,7 +52,7 @@ def _detecter_anomalie_horaire(db: Session, agent: Agent, pointage: Pointage) ->
         return None  # pas de service principal -> pas d'horaire de référence exploitable
 
     jour = _JOURS_PAR_INDEX[pointage.date_heure.weekday()]
-    horaire = horaire_service.horaire_effectif(db, agent.id_service, jour, date_jour=pointage.date_heure.date())
+    horaire = horaire_service.horaire_effectif(db, agent.id_service, jour)
     if horaire is None:
         return None  # jour non travaillé (jour férié, ni horaire configuré, ni jour ouvré par défaut)
     heure_debut, heure_fin = horaire

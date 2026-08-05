@@ -13,7 +13,7 @@ def test_csp_allows_swagger_ui_assets():
         return {"status": "ok"}
 
     client = TestClient(app)
-    response = client.get("/health")
+    response = client.get("/docs")
 
     csp = response.headers.get("Content-Security-Policy", "")
     assert "default-src 'self'" in csp
