@@ -16,6 +16,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas as canvas_mod
 from reportlab.platypus import (
     BaseDocTemplate,
@@ -49,6 +51,7 @@ from app.services.rapport_commun import (
     _BLANC,
     _BLEU,
     _BLEU_HEX,
+    _CHEMIN_LOGO,
     _CORAIL,
     _CORAIL_HEX,
     _GRIS_BORD,
@@ -69,7 +72,12 @@ from app.services.rapport_commun import (
     _TEXTE_HEX,
     _TEXTE_MUT,
     _TEXTE_MUT_HEX,
+    _fmt_heures,
+    _fmt_heures_arrondi,
+    _fmt_nombre,
+    _fmt_pourcent,
     _hex_argb,
+    _logo_disponible,
 )
 
 
@@ -85,8 +93,21 @@ def _couleur_taux(taux: Optional[float]):
 
 
 def _carte_kpi(valeur: str, label: str, couleur_accent) -> Table:
-    """Petite carte KPI moderne : barre d'accent colorée + grande valeur + libellé."""
-    style_valeur = ParagraphStyle("KpiValeur", fontName="Helvetica-Bold", fontSize=15.5, textColor=_TEXTE, leading=18)
+    """Petite carte KPI moderne : barre d'accent colorée + grande valeur + libellé.
+
+    La taille de police de la valeur s'ajuste à sa longueur (les grands
+    totaux d'heures type "18 344,5 h" ne tiennent pas à 15.5pt dans une
+    carte de 2.9cm) afin qu'elle reste toujours sur une seule ligne."""
+    if len(valeur) <= 6:
+        taille_valeur = 15.5
+    elif len(valeur) <= 9:
+        taille_valeur = 13
+    else:
+        taille_valeur = 11
+    style_valeur = ParagraphStyle(
+        "KpiValeur", fontName="Helvetica-Bold", fontSize=taille_valeur, textColor=_TEXTE,
+        leading=taille_valeur + 2.5,
+    )
     style_label = ParagraphStyle("KpiLabel", fontName="Helvetica", fontSize=7.3, textColor=_TEXTE_MUT, leading=9)
     carte = Table(
         [[Paragraph(valeur, style_valeur)], [Paragraph(label, style_label)]],
@@ -104,6 +125,26 @@ def _carte_kpi(valeur: str, label: str, couleur_accent) -> Table:
         ("ROUNDEDCORNERS", [7, 7, 7, 7]),
     ]))
     return carte
+
+
+_STYLE_ENTETE_TABLEAU = ParagraphStyle(
+    "EnteteTableau", fontName="Helvetica-Bold", fontSize=7.8, textColor=_BLANC, leading=9.2, alignment=TA_CENTER,
+)
+_STYLE_ENTETE_TABLEAU_GAUCHE = ParagraphStyle(
+    "EnteteTableauGauche", parent=_STYLE_ENTETE_TABLEAU, alignment=TA_LEFT,
+)
+
+
+def _entetes_tableau(libelles: List[str]) -> List[Paragraph]:
+    """Enveloppe chaque libellé d'en-tête dans un Paragraph pour qu'il se
+    replie sur plusieurs lignes au lieu de déborder sur la colonne voisine —
+    une chaîne brute trop longue pour sa colonne (ex. "Départs anticipés"
+    dans 1.9cm) n'est pas coupée par reportlab et chevauche silencieusement
+    la cellule suivante."""
+    return [
+        Paragraph(libelle, _STYLE_ENTETE_TABLEAU_GAUCHE if i == 0 else _STYLE_ENTETE_TABLEAU)
+        for i, libelle in enumerate(libelles)
+    ]
 
 
 def _style_tableau_detail(taux_par_ligne: List[Optional[float]]) -> TableStyle:
@@ -139,11 +180,22 @@ def _dessiner_banniere(c: canvas_mod.Canvas, titre: str, sous_titre: str) -> Non
 
     cx = _MARGE + 0.62 * cm
     cy = _PAGE_H - _BANNIERE_H / 2
+    rayon = 0.62 * cm
     c.setFillColor(_BLANC)
-    c.circle(cx, cy, 0.62 * cm, fill=1, stroke=0)
-    c.setFillColor(_BLEU)
-    c.setFont("Helvetica-Bold", 12)
-    c.drawCentredString(cx, cy - 4, "SRB")
+    c.circle(cx, cy, rayon, fill=1, stroke=0)
+    if _logo_disponible():
+        # Emblème officiel inséré dans le médaillon blanc, légèrement en
+        # retrait du bord pour conserver le liséré blanc tout autour.
+        diametre_logo = 2 * rayon - 0.14 * cm
+        c.drawImage(
+            ImageReader(_CHEMIN_LOGO),
+            cx - diametre_logo / 2, cy - diametre_logo / 2, diametre_logo, diametre_logo,
+            mask="auto", preserveAspectRatio=True, anchor="c",
+        )
+    else:
+        c.setFillColor(_BLEU)
+        c.setFont("Helvetica-Bold", 12)
+        c.drawCentredString(cx, cy - 4, "SRB")
 
     tx = cx + 1.15 * cm
     c.setFillColor(_BLANC)
@@ -238,14 +290,14 @@ def _rendre_pdf(chemin_absolu: str, indicateurs: dict) -> None:
     ]
 
     g = indicateurs["globaux"]
-    taux_global = f"{g['taux_presence'] * 100:.1f} %" if g["taux_presence"] is not None else "n/d"
+    taux_global = _fmt_pourcent(g["taux_presence"])
     kpis = [
-        (str(g["nombre_agents"]), "Agents concernés", _BLEU),
+        (_fmt_nombre(g["nombre_agents"]), "Agents concernés", _BLEU),
         (taux_global, "Taux de présence", _couleur_taux(g["taux_presence"])),
-        (str(g["nombre_retards"]), "Retards", _AMBRE),
-        (str(g["nombre_absences"]), "Absences", _CORAIL),
-        (str(g["nombre_departs_anticipes"]), "Départs anticipés", _AMBRE),
-        (f"{g['heures_travaillees']:.1f} h", "Heures travaillées", _BLEU),
+        (_fmt_nombre(g["nombre_retards"]), "Retards", _AMBRE),
+        (_fmt_nombre(g["nombre_absences"]), "Absences", _CORAIL),
+        (_fmt_nombre(g["nombre_departs_anticipes"]), "Départs anticipés", _AMBRE),
+        (_fmt_heures_arrondi(g["heures_travaillees"]), "Heures travaillées", _BLEU),
     ]
     cartes = [_carte_kpi(v, l, c) for v, l, c in kpis]
     table_kpi = Table([cartes], colWidths=[3.03 * cm] * 6)
@@ -260,13 +312,13 @@ def _rendre_pdf(chemin_absolu: str, indicateurs: dict) -> None:
     if indicateurs["detail_services"]:
         elements.append(Paragraph("Détail par service", style_titre_section))
         entetes = ["Service", "Agents", "Présence", "Retards", "Absences", "Départs anticipés", "Heures"]
-        lignes = [entetes]
+        lignes = [_entetes_tableau(entetes)]
         taux_lignes: List[Optional[float]] = []
         for s in indicateurs["detail_services"]:
-            taux_s = f"{s['taux_presence'] * 100:.1f} %" if s["taux_presence"] is not None else "n/d"
             lignes.append([
-                s["nom_service"], str(s["nombre_agents"]), taux_s, str(s["nombre_retards"]),
-                str(s["nombre_absences"]), str(s["nombre_departs_anticipes"]), f"{s['heures_travaillees']:.1f} h",
+                s["nom_service"], _fmt_nombre(s["nombre_agents"]), _fmt_pourcent(s["taux_presence"]),
+                _fmt_nombre(s["nombre_retards"]), _fmt_nombre(s["nombre_absences"]),
+                _fmt_nombre(s["nombre_departs_anticipes"]), _fmt_heures(s["heures_travaillees"]),
             ])
             taux_lignes.append(s["taux_presence"])
         table = Table(
@@ -279,13 +331,13 @@ def _rendre_pdf(chemin_absolu: str, indicateurs: dict) -> None:
     if indicateurs["detail_agents"]:
         elements.append(Paragraph("Détail par agent", style_titre_section))
         entetes = ["Matricule", "Agent", "Présence", "Retards", "Absences", "Départs anticipés", "Heures"]
-        lignes = [entetes]
+        lignes = [_entetes_tableau(entetes)]
         taux_lignes = []
         for a in indicateurs["detail_agents"]:
-            taux_a = f"{a['taux_presence'] * 100:.1f} %" if a["taux_presence"] is not None else "n/d"
             lignes.append([
-                a["matricule"], f"{a['prenom']} {a['nom']}", taux_a, str(a["nombre_retards"]),
-                str(a["nombre_absences"]), str(a["nombre_departs_anticipes"]), f"{a['heures_travaillees']:.1f} h",
+                a["matricule"], f"{a['prenom']} {a['nom']}", _fmt_pourcent(a["taux_presence"]),
+                _fmt_nombre(a["nombre_retards"]), _fmt_nombre(a["nombre_absences"]),
+                _fmt_nombre(a["nombre_departs_anticipes"]), _fmt_heures(a["heures_travaillees"]),
             ])
             taux_lignes.append(a["taux_presence"])
         table = Table(

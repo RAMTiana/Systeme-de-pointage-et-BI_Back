@@ -59,6 +59,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Permissions-Policy",
             "camera=(), microphone=(), geolocation=(), payment=()",
         )
+        # Allow popups to communicate with their opener via postMessage
+        # while keeping COOP protections for other contexts.
+        h.setdefault("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
         est_page_docs = request.url.path.endswith(_CHEMINS_DOCS)
         h.setdefault("Content-Security-Policy", _CSP_DOCS if est_page_docs else _CSP_API)
         if settings.APP_ENV == "production":

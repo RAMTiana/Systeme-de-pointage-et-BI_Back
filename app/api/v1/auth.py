@@ -17,8 +17,9 @@ from app.core.security import decode_token
 from app.models.utilisateur import Utilisateur
 from app.schemas.mot_de_passe import MessageResponse, MotDePasseOublieRequest, ReinitialiserMotDePasseRequest
 from app.schemas.token import RefreshRequest, Token
-from app.schemas.utilisateur import GoogleLoginRequest, UtilisateurOut
-from app.services import auth_service, mot_de_passe_service
+from app.schemas.utilisateur import GoogleLoginRequest, ProfilUpdate, UtilisateurOut
+from app.services import auth_service, mot_de_passe_service, utilisateur_service
+from app.services.journal_audit_service import log_action
 
 router = APIRouter(prefix="/auth", tags=["Authentification"])
 
@@ -101,6 +102,31 @@ def logout(
 
 @router.get("/me", response_model=UtilisateurOut, summary="Profil de l'utilisateur courant")
 def me(utilisateur: Utilisateur = Depends(get_current_active_user)) -> Utilisateur:
+    return utilisateur
+
+
+@router.patch(
+    "/me",
+    response_model=UtilisateurOut,
+    summary="Modifier son propre profil (nom affiché, photo)",
+)
+def modifier_mon_profil(
+    payload: ProfilUpdate,
+    db: Session = Depends(get_db),
+    utilisateur: Utilisateur = Depends(get_current_active_user),
+) -> Utilisateur:
+    """
+    Auto-édition limitée au nom affiché et à la photo de profil — le login et
+    l'email restent réservés à la gestion par un administrateur (cf. PATCH
+    /utilisateurs/{id}), pour conserver leur rôle d'identifiant vérifié.
+    """
+    utilisateur = utilisateur_service.update(db, utilisateur, payload)
+    log_action(
+        db,
+        id_utilisateur=utilisateur.id_utilisateur,
+        action="modification_profil",
+        details="Profil modifié par l'utilisateur lui-même.",
+    )
     return utilisateur
 
 

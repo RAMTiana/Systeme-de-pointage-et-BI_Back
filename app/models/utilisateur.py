@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -37,6 +37,11 @@ class Utilisateur(Base):
     email_verifie: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     nom_complet: Mapped[str] = mapped_column(String(150), nullable=False)
     actif: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    photo_profil: Mapped[Optional[str]] = mapped_column(
+        Text,
+        comment="Photo de profil en data URL base64 (JPEG/PNG/WebP, 2 Mo max décodé) — "
+        "modifiable par l'utilisateur lui-même (PATCH /auth/me) ou par un administrateur.",
+    )
     id_role: Mapped[int] = mapped_column(
         ForeignKey("role.id_role", ondelete="RESTRICT"), nullable=False, index=True
     )

@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as ImageOpenpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
@@ -45,16 +46,20 @@ from app.services import horaire_service, journal_audit_service
 from app.services.rapport_commun import (
     _AMBRE,
     _AMBRE_HEX,
+    _AMBRE_LIGHT_HEX,
     _BANNIERE_H,
     _BLANC,
     _BLEU,
     _BLEU_HEX,
+    _CHEMIN_LOGO,
     _CORAIL,
     _CORAIL_HEX,
+    _CORAIL_LIGHT_HEX,
     _GRIS_BORD,
     _GRIS_BORD_HEX,
     _GRIS_ZEBRE,
     _GRIS_ZEBRE_HEX,
+    _INFO_LIGHT_HEX,
     _JOURS_PAR_INDEX,
     _LIBELLE_PERIODE,
     _MARGE,
@@ -65,11 +70,13 @@ from app.services.rapport_commun import (
     _SOUS_NOM_ORG,
     _TEAL,
     _TEAL_HEX,
+    _TEAL_LIGHT_HEX,
     _TEXTE,
     _TEXTE_HEX,
     _TEXTE_MUT,
     _TEXTE_MUT_HEX,
     _hex_argb,
+    _logo_disponible,
 )
 
 
@@ -83,8 +90,16 @@ _FOND_ENTETE = _fill(_BLEU_HEX)
 _FOND_ZEBRE = _fill(_GRIS_ZEBRE_HEX)
 _ALIGN_CENTRE = Alignment(horizontal="center", vertical="center")
 _ALIGN_GAUCHE = Alignment(horizontal="left", vertical="center")
-_FORMAT_POURCENT = "0.0%"
-_FORMAT_HEURES = "0.0 \"h\""
+_FORMAT_POURCENT = "[$-40C]0.0%"
+_FORMAT_HEURES = "[$-40C]#,##0.0 \"h\""
+_FORMAT_ENTIER = "[$-40C]#,##0"
+
+# Accent + fond pastel par carte KPI, dans l'ordre d'affichage (Agents,
+# Taux — calculé dynamiquement, Retards, Absences, Départs anticipés,
+# Heures). Reprend les couleurs de la palette et les teintes --*-light du
+# frontend pour que les cartes KPI ressemblent à leur équivalent à l'écran.
+_ACCENTS_KPI = [_BLEU_HEX, None, _AMBRE_HEX, _CORAIL_HEX, _AMBRE_HEX, _BLEU_HEX]
+_FONDS_KPI = [_INFO_LIGHT_HEX, None, _AMBRE_LIGHT_HEX, _CORAIL_LIGHT_HEX, _AMBRE_LIGHT_HEX, _INFO_LIGHT_HEX]
 
 
 def _couleur_taux_hex(taux: Optional[float]) -> str:
@@ -95,6 +110,16 @@ def _couleur_taux_hex(taux: Optional[float]) -> str:
     if taux >= 0.75:
         return _AMBRE_HEX
     return _CORAIL_HEX
+
+
+def _couleur_taux_claire_hex(taux: Optional[float]) -> str:
+    if taux is None:
+        return _GRIS_ZEBRE_HEX
+    if taux >= 0.90:
+        return _TEAL_LIGHT_HEX
+    if taux >= 0.75:
+        return _AMBRE_LIGHT_HEX
+    return _CORAIL_LIGHT_HEX
 
 
 def _configurer_impression(ws, nb_colonnes: int, titre_pied: str) -> None:
@@ -139,6 +164,8 @@ def _ecrire_feuille_detail(
             cell.alignment = _ALIGN_CENTRE if col > 1 else _ALIGN_GAUCHE
             if i % 2 == 0:
                 cell.fill = _FOND_ZEBRE
+            if isinstance(valeur, int) and not isinstance(valeur, bool) and col != idx_col_taux:
+                cell.number_format = _FORMAT_ENTIER
             if idx_col_taux is not None and col == idx_col_taux:
                 if isinstance(valeur, (int, float)):
                     cell.number_format = _FORMAT_POURCENT
@@ -187,18 +214,52 @@ def _rendre_excel(chemin_absolu: str, indicateurs: dict) -> None:
     ws.sheet_view.showGridLines = False
     ws.sheet_properties.tabColor = _BLEU_HEX
 
-    ws.merge_cells("A1:F1")
-    ws["A1"] = titre_pied
-    ws["A1"].font = Font(bold=True, size=15, color=_BLEU_HEX)
-    ws.row_dimensions[1].height = 26
+    # Bandeau institutionnel (fond bleu marque + liséré teal), même
+    # traitement que l'en-tête du PDF : logo à gauche, titre/sous-titre au
+    # centre, organisme à droite. Le bandeau s'étend sur une colonne de plus
+    # (G) que les cartes KPI pour laisser assez de place au nom de
+    # l'organisme sans qu'il ne déborde du fond coloré.
+    for ligne in (1, 2):
+        for col in range(1, 8):
+            ws.cell(row=ligne, column=col).fill = _fill(_BLEU_HEX)
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 16
 
-    ws.merge_cells("A2:F2")
-    ws["A2"] = f"{periode_txt}  •  Périmètre : {indicateurs['nom_service']}"
-    ws["A2"].font = Font(size=10, color=_TEXTE_MUT_HEX)
+    ws.merge_cells("B1:E1")
+    ws["B1"] = titre_pied
+    ws["B1"].font = Font(bold=True, size=14, color="FFFFFF")
+    ws["B1"].alignment = _ALIGN_GAUCHE
 
-    ws.merge_cells("A3:F3")
-    ws["A3"] = f"Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} — document à usage interne"
-    ws["A3"].font = Font(size=8.5, italic=True, color=_TEXTE_MUT_HEX)
+    ws.merge_cells("B2:E2")
+    ws["B2"] = periode_txt
+    ws["B2"].font = Font(size=9, color="D6E4EC")
+    ws["B2"].alignment = _ALIGN_GAUCHE
+
+    ws.merge_cells("F1:G1")
+    ws["F1"] = _NOM_ORG
+    ws["F1"].font = Font(bold=True, size=10, color="FFFFFF")
+    ws["F1"].alignment = Alignment(horizontal="right", vertical="center")
+
+    ws.merge_cells("F2:G2")
+    ws["F2"] = _SOUS_NOM_ORG
+    ws["F2"].font = Font(size=7.5, color="D6E4EC")
+    ws["F2"].alignment = Alignment(horizontal="right", vertical="center", wrap_text=True)
+
+    # Liséré d'accent teal, identique à la bande fine sous le bandeau PDF.
+    ws.row_dimensions[3].height = 4
+    for col in range(1, 8):
+        ws.cell(row=3, column=col).fill = _fill(_TEAL_HEX)
+
+    if _logo_disponible():
+        logo = ImageOpenpyxl(_CHEMIN_LOGO)
+        logo.width = 34
+        logo.height = 34
+        ws.add_image(logo, "A1")
+
+    ws.merge_cells("A4:F4")
+    ws["A4"] = f"Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')} — document à usage interne"
+    ws["A4"].font = Font(size=8.5, italic=True, color=_TEXTE_MUT_HEX)
+    ws.row_dimensions[4].height = 18
 
     g = indicateurs["globaux"]
     entetes_kpi = ["Agents concernés", "Taux de présence", "Retards", "Absences", "Départs anticipés", "Heures travaillées"]
@@ -207,27 +268,47 @@ def _rendre_excel(chemin_absolu: str, indicateurs: dict) -> None:
         g["taux_presence"] if g["taux_presence"] is not None else None,
         g["nombre_retards"], g["nombre_absences"], g["nombre_departs_anticipes"], g["heures_travaillees"],
     ]
-    for col, entete in enumerate(entetes_kpi, start=1):
-        cell = ws.cell(row=5, column=col, value=entete)
-        cell.font = _POLICE_ENTETE
-        cell.fill = _FOND_ENTETE
-        cell.alignment = _ALIGN_CENTRE
-        cell.border = _BORDURE_FINE
-        ws.column_dimensions[get_column_letter(col)].width = 20
-    ws.row_dimensions[5].height = 20
 
-    for col, valeur in enumerate(valeurs_kpi, start=1):
-        cell = ws.cell(row=6, column=col, value=valeur)
-        cell.alignment = _ALIGN_CENTRE
-        cell.border = _BORDURE_FINE
-        cell.font = Font(bold=True, size=12, color=_TEXTE_HEX)
+    ligne_entete_kpi, ligne_valeur_kpi = 6, 7
+    for col, entete in enumerate(entetes_kpi, start=1):
+        idx = col - 1
+        accent_hex = _ACCENTS_KPI[idx] if _ACCENTS_KPI[idx] else _couleur_taux_hex(valeurs_kpi[1])
+        fond_hex = _FONDS_KPI[idx] if _FONDS_KPI[idx] else _couleur_taux_claire_hex(valeurs_kpi[1])
+
+        # Carte KPI = 2 lignes fusionnées visuellement par un fond pastel
+        # commun, une bordure fine grise sur le pourtour et un filet coloré
+        # épais en haut (le même rôle que le LINEABOVE des cartes du PDF).
+        cell_entete = ws.cell(row=ligne_entete_kpi, column=col, value=entete)
+        cell_entete.font = Font(bold=True, size=8, color=_TEXTE_MUT_HEX)
+        cell_entete.fill = _fill(fond_hex)
+        cell_entete.alignment = Alignment(horizontal="center", vertical="bottom", wrap_text=True)
+        cell_entete.border = Border(
+            top=Side(style="thick", color=accent_hex),
+            left=Side(style="thin", color=_GRIS_BORD_HEX),
+            right=Side(style="thin", color=_GRIS_BORD_HEX),
+        )
+        ws.column_dimensions[get_column_letter(col)].width = 20
+
+        cell_valeur = ws.cell(row=ligne_valeur_kpi, column=col, value=valeurs_kpi[idx])
+        cell_valeur.alignment = _ALIGN_CENTRE
+        cell_valeur.fill = _fill(fond_hex)
+        cell_valeur.font = Font(bold=True, size=14, color=_TEXTE_HEX)
+        cell_valeur.border = Border(
+            left=Side(style="thin", color=_GRIS_BORD_HEX),
+            right=Side(style="thin", color=_GRIS_BORD_HEX),
+            bottom=Side(style="thin", color=_GRIS_BORD_HEX),
+        )
+        if col in (1, 3, 4, 5):
+            cell_valeur.number_format = _FORMAT_ENTIER
         if col == 6:
-            cell.number_format = _FORMAT_HEURES
+            cell_valeur.number_format = _FORMAT_HEURES
+
     if valeurs_kpi[1] is not None:
-        cell_taux = ws.cell(row=6, column=2)
+        cell_taux = ws.cell(row=ligne_valeur_kpi, column=2)
         cell_taux.number_format = _FORMAT_POURCENT
-        cell_taux.font = Font(bold=True, size=12, color=_couleur_taux_hex(valeurs_kpi[1]))
-    ws.row_dimensions[6].height = 22
+        cell_taux.font = Font(bold=True, size=14, color=_couleur_taux_hex(valeurs_kpi[1]))
+    ws.row_dimensions[ligne_entete_kpi].height = 26
+    ws.row_dimensions[ligne_valeur_kpi].height = 28
 
     _configurer_impression(ws, len(entetes_kpi), titre_pied)
 

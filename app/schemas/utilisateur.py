@@ -1,8 +1,44 @@
 """Schémas Pydantic pour les utilisateurs, rôles et permissions (RBAC)."""
+import base64
+import binascii
+import re
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+# --------------------------------------------------------------------
+# Photo de profil (avatar) — envoyée par le frontend en data URL base64
+# (redimensionnée/compressée côté client). Validation commune réutilisée
+# par `UtilisateurUpdate` (édition par un administrateur) et `ProfilUpdate`
+# (auto-édition via PATCH /auth/me).
+# --------------------------------------------------------------------
+
+_FORMATS_PHOTO_AUTORISES = {"image/jpeg", "image/png", "image/webp"}
+_TAILLE_MAX_PHOTO_OCTETS = 2 * 1024 * 1024  # 2 Mo une fois décodée
+_MOTIF_DATA_URL_PHOTO = re.compile(r"^data:(?P<mime>image/[\w.+-]+);base64,(?P<donnees>.+)$", re.DOTALL)
+
+
+def _valider_photo_profil(valeur: Optional[str]) -> Optional[str]:
+    """Chaîne vide -> suppression de la photo existante (autorisée telle quelle).
+    Sinon : data URL base64 obligatoire, format JPEG/PNG/WebP, 2 Mo max décodés."""
+    if valeur is None or valeur == "":
+        return valeur
+    correspondance = _MOTIF_DATA_URL_PHOTO.match(valeur.strip())
+    if not correspondance:
+        raise ValueError(
+            "Photo invalide : attendu une data URL base64, ex. 'data:image/jpeg;base64,...'."
+        )
+    mime = correspondance.group("mime")
+    if mime not in _FORMATS_PHOTO_AUTORISES:
+        raise ValueError(f"Format d'image non autorisé ({mime}) : utilisez JPEG, PNG ou WebP.")
+    try:
+        donnees_brutes = base64.b64decode(correspondance.group("donnees"), validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("Photo invalide : encodage base64 illisible.")
+    if len(donnees_brutes) > _TAILLE_MAX_PHOTO_OCTETS:
+        raise ValueError("Photo trop volumineuse : 2 Mo maximum une fois décodée.")
+    return valeur
 
 
 class PermissionOut(BaseModel):
@@ -30,6 +66,7 @@ class UtilisateurOut(BaseModel):
     actif: bool
     email_verifie: bool
     auth_provider: str
+    photo_profil: Optional[str] = None
     role: RoleOut
 
     model_config = ConfigDict(from_attributes=True)
@@ -71,6 +108,31 @@ class UtilisateurUpdate(BaseModel):
     login: Optional[str] = Field(default=None, min_length=1, max_length=80)
     email: Optional[EmailStr] = None
     nom_complet: Optional[str] = Field(default=None, min_length=1, max_length=150)
+    photo_profil: Optional[str] = Field(
+        default=None,
+        description="Data URL base64 (JPEG/PNG/WebP, 2 Mo max décodé). Chaîne vide pour supprimer la photo actuelle.",
+    )
+
+    @field_validator("photo_profil")
+    @classmethod
+    def _validation_photo(cls, v: Optional[str]) -> Optional[str]:
+        return _valider_photo_profil(v)
+
+
+class ProfilUpdate(BaseModel):
+    """Auto-modification du profil par l'utilisateur connecté (PATCH /auth/me) :
+    volontairement limitée au nom affiché et à la photo — le login et l'email
+    restent modifiables uniquement par un administrateur (cf. UtilisateurUpdate)."""
+    nom_complet: Optional[str] = Field(default=None, min_length=1, max_length=150)
+    photo_profil: Optional[str] = Field(
+        default=None,
+        description="Data URL base64 (JPEG/PNG/WebP, 2 Mo max décodé). Chaîne vide pour supprimer la photo actuelle.",
+    )
+
+    @field_validator("photo_profil")
+    @classmethod
+    def _validation_photo(cls, v: Optional[str]) -> Optional[str]:
+        return _valider_photo_profil(v)
 
 
 class UtilisateurAdminOut(BaseModel):
@@ -83,6 +145,7 @@ class UtilisateurAdminOut(BaseModel):
     email_verifie: bool
     auth_provider: str
     date_creation: datetime
+    photo_profil: Optional[str] = None
     role: RoleLight
 
     model_config = ConfigDict(from_attributes=True)

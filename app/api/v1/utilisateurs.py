@@ -53,7 +53,6 @@ def _interdire_action_sur_soi_meme(utilisateur_courant: Utilisateur, id_cible: i
     "",
     response_model=Page[UtilisateurAdminOut],
     summary="Lister les comptes utilisateurs",
-    dependencies=[Depends(_permission_admin)],
 )
 def lister_utilisateurs(
     recherche: Optional[str] = Query(default=None, description="Filtre sur login, email ou nom complet"),
@@ -62,9 +61,16 @@ def lister_utilisateurs(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(_permission_admin),
 ) -> Page[UtilisateurAdminOut]:
     utilisateurs, total = utilisateur_service.list_paginated(
-        db, recherche=recherche, id_role=id_role, actif=actif, skip=skip, limit=limit
+        db,
+        recherche=recherche,
+        id_role=id_role,
+        actif=actif,
+        skip=skip,
+        limit=limit,
+        exclure_administrateur=utilisateur_service.est_chef_service(utilisateur_courant),
     )
     return Page(items=utilisateurs, total=total, skip=skip, limit=limit)
 
@@ -73,20 +79,29 @@ def lister_utilisateurs(
     "/roles",
     response_model=List[RoleOut],
     summary="Lister les rôles disponibles (+ permissions)",
-    dependencies=[Depends(_permission_admin)],
 )
-def lister_roles(db: Session = Depends(get_db)) -> List[RoleOut]:
-    return utilisateur_service.list_roles(db)
+def lister_roles(
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(_permission_admin),
+) -> List[RoleOut]:
+    return utilisateur_service.list_roles(
+        db, exclure_administrateur=utilisateur_service.est_chef_service(utilisateur_courant)
+    )
 
 
 @router.get(
     "/{id_utilisateur}",
     response_model=UtilisateurAdminOut,
     summary="Détail d'un compte",
-    dependencies=[Depends(_permission_admin)],
 )
-def obtenir_utilisateur(id_utilisateur: int, db: Session = Depends(get_db)) -> Utilisateur:
-    return utilisateur_service.get_by_id_or_404(db, id_utilisateur)
+def obtenir_utilisateur(
+    id_utilisateur: int,
+    db: Session = Depends(get_db),
+    utilisateur_courant: Utilisateur = Depends(_permission_admin),
+) -> Utilisateur:
+    utilisateur = utilisateur_service.get_by_id_or_404(db, id_utilisateur)
+    utilisateur_service.verifier_cible_autorisee_pour_chef_service(utilisateur_courant, utilisateur)
+    return utilisateur
 
 
 @router.post(
@@ -100,6 +115,8 @@ def creer_utilisateur(
     db: Session = Depends(get_db),
     utilisateur_courant: Utilisateur = Depends(_permission_admin),
 ) -> Utilisateur:
+    role_cible = utilisateur_service.get_role_or_404(db, payload.id_role)
+    utilisateur_service.verifier_role_attribuable_par_chef_service(utilisateur_courant, role_cible)
     utilisateur = utilisateur_service.create(db, payload)
     log_action(
         db,
@@ -122,6 +139,7 @@ def modifier_utilisateur(
     utilisateur_courant: Utilisateur = Depends(_permission_admin),
 ) -> Utilisateur:
     utilisateur = utilisateur_service.get_by_id_or_404(db, id_utilisateur)
+    utilisateur_service.verifier_cible_autorisee_pour_chef_service(utilisateur_courant, utilisateur)
     utilisateur = utilisateur_service.update(db, utilisateur, payload)
     log_action(db, id_utilisateur=utilisateur_courant.id_utilisateur, action="modification_compte",
                details=f"Compte modifié : {utilisateur.login}")
@@ -143,6 +161,9 @@ def changer_role(
         utilisateur_courant, id_utilisateur, "Vous ne pouvez pas modifier votre propre rôle."
     )
     utilisateur = utilisateur_service.get_by_id_or_404(db, id_utilisateur)
+    utilisateur_service.verifier_cible_autorisee_pour_chef_service(utilisateur_courant, utilisateur)
+    role_cible = utilisateur_service.get_role_or_404(db, payload.id_role)
+    utilisateur_service.verifier_role_attribuable_par_chef_service(utilisateur_courant, role_cible)
     utilisateur = utilisateur_service.changer_role(db, utilisateur, payload.id_role)
     log_action(db, id_utilisateur=utilisateur_courant.id_utilisateur, action="changement_role",
                details=f"Nouveau rôle pour {utilisateur.login} : {payload.id_role}")
@@ -163,6 +184,7 @@ def desactiver_utilisateur(
         utilisateur_courant, id_utilisateur, "Vous ne pouvez pas désactiver votre propre compte."
     )
     utilisateur = utilisateur_service.get_by_id_or_404(db, id_utilisateur)
+    utilisateur_service.verifier_cible_autorisee_pour_chef_service(utilisateur_courant, utilisateur)
     utilisateur = utilisateur_service.changer_statut(db, utilisateur, actif=False)
     log_action(db, id_utilisateur=utilisateur_courant.id_utilisateur, action="desactivation_compte",
                details=f"Compte désactivé : {utilisateur.login}")
@@ -173,7 +195,6 @@ def desactiver_utilisateur(
     "/{id_utilisateur}/reactiver",
     response_model=UtilisateurAdminOut,
     summary="Réactiver un compte",
-    dependencies=[Depends(_permission_admin)],
 )
 def reactiver_utilisateur(
     id_utilisateur: int,
@@ -181,6 +202,7 @@ def reactiver_utilisateur(
     utilisateur_courant: Utilisateur = Depends(_permission_admin),
 ) -> Utilisateur:
     utilisateur = utilisateur_service.get_by_id_or_404(db, id_utilisateur)
+    utilisateur_service.verifier_cible_autorisee_pour_chef_service(utilisateur_courant, utilisateur)
     utilisateur = utilisateur_service.changer_statut(db, utilisateur, actif=True)
     log_action(db, id_utilisateur=utilisateur_courant.id_utilisateur, action="reactivation_compte",
                details=f"Compte réactivé : {utilisateur.login}")
@@ -199,6 +221,7 @@ def reinitialiser_mot_de_passe(
     utilisateur_courant: Utilisateur = Depends(_permission_admin),
 ) -> Utilisateur:
     utilisateur = utilisateur_service.get_by_id_or_404(db, id_utilisateur)
+    utilisateur_service.verifier_cible_autorisee_pour_chef_service(utilisateur_courant, utilisateur)
     utilisateur = utilisateur_service.reinitialiser_mot_de_passe(db, utilisateur, payload.nouveau_mot_de_passe)
     log_action(db, id_utilisateur=utilisateur_courant.id_utilisateur, action="reinitialisation_mot_de_passe",
                details=f"Mot de passe réinitialisé par un administrateur : {utilisateur.login}")
@@ -219,6 +242,7 @@ def supprimer_utilisateur(
         utilisateur_courant, id_utilisateur, "Vous ne pouvez pas supprimer votre propre compte."
     )
     utilisateur = utilisateur_service.get_by_id_or_404(db, id_utilisateur)
+    utilisateur_service.verifier_cible_autorisee_pour_chef_service(utilisateur_courant, utilisateur)
     login = utilisateur.login
     utilisateur_service.delete(db, utilisateur)
     log_action(db, id_utilisateur=utilisateur_courant.id_utilisateur, action="suppression_compte",

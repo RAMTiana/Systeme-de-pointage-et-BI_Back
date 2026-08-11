@@ -77,6 +77,14 @@ _PIED_H = 1.2 * cm
 _NOM_ORG = "SRB Haute Matsiatra"
 _SOUS_NOM_ORG = "Système de gestion biométrique des agents"
 
+# Emblème officiel (Ministère de l'Économie et des Finances), repris en tête
+# des deux formats d'export pour un rendu "papier à en-tête" institutionnel.
+_CHEMIN_LOGO = os.path.join(os.path.dirname(__file__), "..", "assets", "logo-srb.png")
+
+
+def _logo_disponible() -> bool:
+    return os.path.isfile(_CHEMIN_LOGO)
+
 
 def _hex_argb(couleur) -> str:
     """Convertit une couleur reportlab (0.0-1.0 par canal) en hex RRGGBB pour openpyxl."""
@@ -93,3 +101,37 @@ _GRIS_BORD_HEX = _hex_argb(_GRIS_BORD)
 _GRIS_ZEBRE_HEX = _hex_argb(_GRIS_ZEBRE)
 _TEXTE_HEX = _hex_argb(_TEXTE)
 _TEXTE_MUT_HEX = _hex_argb(_TEXTE_MUT)
+
+# Teintes pastel (identiques aux tokens --*-light du frontend — src/styles/_base.scss)
+# utilisées comme fond des cartes KPI Excel, en écho aux badges de l'application.
+_TEAL_LIGHT_HEX = "E1F5EE"
+_CORAIL_LIGHT_HEX = "FAECE7"
+_AMBRE_LIGHT_HEX = "FAEEDA"
+_INFO_LIGHT_HEX = "E6F1FB"
+
+
+def _fmt_nombre(n: float, decimales: int = 0) -> str:
+    """Formate un nombre selon la convention française : espace pour les
+    milliers, virgule pour la décimale (ex. 18 344,5)."""
+    texte = f"{n:,.{decimales}f}"
+    entier, _, decimal = texte.partition(".")
+    entier = entier.replace(",", " ")
+    return f"{entier},{decimal}" if decimales else entier
+
+
+def _fmt_heures(n: float) -> str:
+    # Espace insécable entre la valeur et l'unité : évite qu'un retour à la
+    # ligne ne sépare "344,5" de "h" dans les cellules et cartes KPI étroites.
+    return f"{_fmt_nombre(n, 1)}\u00A0h"
+
+
+def _fmt_heures_arrondi(n: float) -> str:
+    """Variante sans décimale, réservée aux cartes KPI (lecture rapide d'un
+    grand total) — le détail par service/agent conserve la décimale."""
+    return f"{_fmt_nombre(round(n))}\u00A0h"
+
+
+def _fmt_pourcent(taux: Optional[float]) -> str:
+    if taux is None:
+        return "n/d"
+    return f"{_fmt_nombre(taux * 100, 1)}\u00A0%"

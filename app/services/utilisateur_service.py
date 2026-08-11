@@ -20,12 +20,47 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.security import hash_password
 from app.models.rbac import Role
 from app.models.utilisateur import Utilisateur
-from app.schemas.utilisateur import UtilisateurCreate, UtilisateurUpdate
+from app.schemas.utilisateur import ProfilUpdate, UtilisateurCreate, UtilisateurUpdate
 
 _IDENTIFIANT_DEJA_UTILISE = HTTPException(
     status_code=status.HTTP_409_CONFLICT,
     detail="Un compte avec ce login ou cet email existe déjà.",
 )
+
+# --------------------------------------------------------------------
+# Portée restreinte du Chef de service : ce rôle partage la permission
+# `valider_roles` avec l'Administrateur (cf. seed_reference_data.py),
+# mais ne doit gérer (créer, modifier, changer de rôle, activer/désactiver,
+# réinitialiser le mot de passe, supprimer) que des comptes Secrétaire ou
+# Chef de service — jamais un compte Administrateur. Seul un compte
+# Administrateur peut gérer un autre compte Administrateur.
+# --------------------------------------------------------------------
+
+NOM_ROLE_ADMINISTRATEUR = "Administrateur"
+NOM_ROLE_CHEF_SERVICE = "Chef de service"
+
+_INTERDIT_GESTION_ADMIN_PAR_CHEF_SERVICE = HTTPException(
+    status_code=status.HTTP_403_FORBIDDEN,
+    detail="Un chef de service ne peut gérer que les comptes Secrétaire et Chef de service, pas un compte Administrateur.",
+)
+
+
+def est_chef_service(utilisateur: Utilisateur) -> bool:
+    return utilisateur.role.nom_role == NOM_ROLE_CHEF_SERVICE
+
+
+def verifier_cible_autorisee_pour_chef_service(utilisateur_courant: Utilisateur, cible: Utilisateur) -> None:
+    """À appeler avant toute action d'écriture sur `cible` : refuse si l'acteur est
+    Chef de service et que le compte visé est un compte Administrateur."""
+    if est_chef_service(utilisateur_courant) and cible.role.nom_role == NOM_ROLE_ADMINISTRATEUR:
+        raise _INTERDIT_GESTION_ADMIN_PAR_CHEF_SERVICE
+
+
+def verifier_role_attribuable_par_chef_service(utilisateur_courant: Utilisateur, role_cible: Role) -> None:
+    """À appeler avant une création de compte ou un changement de rôle : refuse si
+    l'acteur est Chef de service et que le rôle à attribuer est Administrateur."""
+    if est_chef_service(utilisateur_courant) and role_cible.nom_role == NOM_ROLE_ADMINISTRATEUR:
+        raise _INTERDIT_GESTION_ADMIN_PAR_CHEF_SERVICE
 
 
 def _requete_avec_role() -> Select:
@@ -86,9 +121,13 @@ def get_role_or_404(db: Session, id_role: int) -> Role:
     return role
 
 
-def list_roles(db: Session) -> List[Role]:
-    """Rôles disponibles (+ permissions), pour peupler un menu déroulant côté Angular."""
+def list_roles(db: Session, exclure_administrateur: bool = False) -> List[Role]:
+    """Rôles disponibles (+ permissions), pour peupler un menu déroulant côté Angular.
+    `exclure_administrateur` retire le rôle Administrateur (cas d'un chef de service,
+    qui ne peut pas attribuer ce rôle — cf. `verifier_role_attribuable_par_chef_service`)."""
     stmt = select(Role).options(joinedload(Role.permissions)).order_by(Role.nom_role)
+    if exclure_administrateur:
+        stmt = stmt.where(Role.nom_role != NOM_ROLE_ADMINISTRATEUR)
     return list(db.execute(stmt).unique().scalars().all())
 
 
@@ -99,13 +138,19 @@ def list_paginated(
     actif: Optional[bool] = None,
     skip: int = 0,
     limit: int = 50,
+    exclure_administrateur: bool = False,
 ) -> Tuple[List[Utilisateur], int]:
     """
     Recherche paginée selon login, email ou nom complet (recherche partielle,
     insensible à la casse) et filtrage par rôle / statut d'activation.
+    `exclure_administrateur` masque les comptes Administrateur (cas d'un chef de
+    service, qui n'a pas le droit de les gérer).
     """
     stmt = _requete_avec_role()
     conditions = []
+
+    if exclure_administrateur:
+        conditions.append(Utilisateur.role.has(Role.nom_role != NOM_ROLE_ADMINISTRATEUR))
 
     if recherche:
         motif = f"%{recherche}%"
@@ -156,7 +201,7 @@ def create(db: Session, payload: UtilisateurCreate) -> Utilisateur:
     return get_by_id_or_404(db, utilisateur.id_utilisateur)
 
 
-def update(db: Session, utilisateur: Utilisateur, payload: UtilisateurUpdate) -> Utilisateur:
+def update(db: Session, utilisateur: Utilisateur, payload: UtilisateurUpdate | ProfilUpdate) -> Utilisateur:
     donnees = payload.model_dump(exclude_unset=True)
     for champ, valeur in donnees.items():
         setattr(utilisateur, champ, valeur)
