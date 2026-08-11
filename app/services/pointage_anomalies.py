@@ -47,6 +47,27 @@ def _ajouter_minutes(heure, minutes: int):
     return reference.time()
 
 
+def _est_premier_pointage_du_jour(db: Session, id_agent: int, pointage: Pointage) -> bool:
+    """
+    Indique si `pointage` est le tout premier pointage VALIDE de l'agent pour
+    sa journée (aucun autre pointage validé strictement antérieur ce même
+    jour). Sert à ne vérifier le retard que sur l'entrée d'ouverture de la
+    journée — une entrée de retour après une sortie exceptionnelle (urgence,
+    cas familial, raison médicale...) ne doit pas être comparée à l'heure
+    d'ouverture du service, sous peine de faux positifs "retard" sur des
+    agents rentrés à l'heure le matin.
+    """
+    debut_jour = datetime.combine(pointage.date_heure.date(), datetime.min.time())
+    stmt = select(func.count()).select_from(Pointage).where(
+        Pointage.id_agent == id_agent,
+        Pointage.statut == StatutPointage.VALIDE,
+        Pointage.date_heure >= debut_jour,
+        Pointage.date_heure < pointage.date_heure,
+        Pointage.id_pointage != pointage.id_pointage,
+    )
+    return db.execute(stmt).scalar_one() == 0
+
+
 def _detecter_anomalie_horaire(db: Session, agent: Agent, pointage: Pointage) -> Optional[Anomalie]:
     if agent.id_service is None:
         return None  # pas de service principal -> pas d'horaire de référence exploitable
@@ -61,10 +82,15 @@ def _detecter_anomalie_horaire(db: Session, agent: Agent, pointage: Pointage) ->
     type_anomalie: Optional[TypeAnomalie] = None
 
     if pointage.type_pointage == TypePointage.ENTREE:
-        seuil_minutes = parametre_service.get_int(db, "seuil_retard_minutes", default=15)
-        limite = _ajouter_minutes(heure_debut, seuil_minutes)
-        if heure_pointage > limite:
-            type_anomalie = TypeAnomalie.RETARD
+        # Seule la 1ère entrée de la journée (l'entrée d'ouverture) est
+        # comparée à l'heure de début du service. Une entrée de retour après
+        # une sortie exceptionnelle en cours de journée n'a pas à être jugée
+        # par rapport à l'heure d'ouverture du matin : ce n'est pas un retard.
+        if _est_premier_pointage_du_jour(db, agent.id_agent, pointage):
+            seuil_minutes = parametre_service.get_int(db, "seuil_retard_minutes", default=15)
+            limite = _ajouter_minutes(heure_debut, seuil_minutes)
+            if heure_pointage > limite:
+                type_anomalie = TypeAnomalie.RETARD
     else:  # SORTIE
         if heure_pointage < heure_fin:
             type_anomalie = TypeAnomalie.DEPART_ANTICIPE
@@ -116,4 +142,3 @@ def _detecter_anomalie_horaire(db: Session, agent: Agent, pointage: Pointage) ->
 # --------------------------------------------------------------------
 # Enregistrement + journalisation communs (étapes 12-13)
 # --------------------------------------------------------------------
-

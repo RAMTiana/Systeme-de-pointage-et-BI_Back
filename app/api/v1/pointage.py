@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_active_user, get_db, verify_device_key
 from app.models.anomalie import Anomalie
-from app.models.enums import ModePointage, StatutPointage, TypePointage
+from app.models.enums import ModePointage, StatutJustification, StatutPointage, TypePointage
 from app.models.pointage import Pointage
 from app.schemas.common import Page
 from app.schemas.pointage import (
@@ -45,9 +45,12 @@ _DISPOSITIF = [Depends(verify_device_key)]
 
 
 def _vers_resultat(pointage: Pointage, anomalie: Optional[Anomalie]) -> PointageResultat:
+    anomalie_a_signaler = (
+        anomalie is not None and anomalie.statut_justification != StatutJustification.JUSTIFIEE
+    )
     return PointageResultat(
         pointage=PointageOut.model_validate(pointage),
-        anomalie_detectee=anomalie.type_anomalie.value if anomalie else None,
+        anomalie_detectee=anomalie.type_anomalie.value if anomalie_a_signaler else None,
     )
 
 
