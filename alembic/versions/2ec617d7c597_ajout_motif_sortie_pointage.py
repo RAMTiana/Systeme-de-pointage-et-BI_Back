@@ -30,9 +30,22 @@ motif_sortie_enum = sa.Enum(
 
 
 def upgrade() -> None:
-    motif_sortie_enum.create(op.get_bind(), checkfirst=True)
-    op.add_column('pointage', sa.Column('motif_sortie', motif_sortie_enum, nullable=True))
-    op.add_column('pointage', sa.Column('commentaire', sa.Text(), nullable=True))
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_cols = [c["name"] for c in inspector.get_columns("pointage")] if "pointage" in inspector.get_table_names() else []
+    motif_sortie_enum.create(bind, checkfirst=True)
+    if "motif_sortie" not in existing_cols:
+        try:
+            op.add_column("pointage", sa.Column("motif_sortie", motif_sortie_enum, nullable=True))
+        except sa.exc.ProgrammingError:
+            # Colonne déjà présente (concurrence ou état intermédiaire) —
+            # ignorer pour rendre la migration idempotente.
+            pass
+    if "commentaire" not in existing_cols:
+        try:
+            op.add_column("pointage", sa.Column("commentaire", sa.Text(), nullable=True))
+        except sa.exc.ProgrammingError:
+            pass
 
 
 def downgrade() -> None:

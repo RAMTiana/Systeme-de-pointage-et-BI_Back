@@ -19,15 +19,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'utilisateur',
-        sa.Column(
-            'photo_profil',
-            sa.Text(),
-            nullable=True,
-            comment="Photo de profil en data URL base64 (JPEG/PNG/WebP, 2 Mo max décodé).",
-        ),
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_cols = [c["name"] for c in inspector.get_columns("utilisateur")] if "utilisateur" in inspector.get_table_names() else []
+    if "photo_profil" not in existing_cols:
+        try:
+            op.add_column(
+                'utilisateur',
+                sa.Column(
+                    'photo_profil',
+                    sa.Text(),
+                    nullable=True,
+                    comment="Photo de profil en data URL base64 (JPEG/PNG/WebP, 2 Mo max décodé).",
+                ),
+            )
+        except sa.exc.ProgrammingError:
+            pass
 
 
 def downgrade() -> None:
