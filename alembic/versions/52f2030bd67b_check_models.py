@@ -29,13 +29,29 @@ def upgrade() -> None:
     # alembic/SQLAlchemy ne le fait pas automatiquement dans ce cas.
     motif_sortie_enum.create(op.get_bind(), checkfirst=True)
 
-    op.add_column('pointage', sa.Column('commentaire', sa.Text(), nullable=True))
-    op.alter_column('pointage', 'motif_sortie',
-               existing_type=sa.VARCHAR(length=32),
-               type_=motif_sortie_enum,
-               existing_nullable=True,
-               postgresql_using="motif_sortie::motif_sortie_enum")
-    op.drop_column('pointage', 'commentaire_motif')
+    # Make idempotent: only add/alter/drop if the target columns exist/are missing.
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    existing_cols = [c["name"] for c in insp.get_columns("pointage")] if "pointage" in insp.get_table_names() else []
+
+    if "commentaire" not in existing_cols:
+        try:
+            op.add_column('pointage', sa.Column('commentaire', sa.Text(), nullable=True))
+        except sa.exc.ProgrammingError:
+            pass
+
+    if "motif_sortie" in existing_cols:
+        op.alter_column('pointage', 'motif_sortie',
+                   existing_type=sa.VARCHAR(length=32),
+                   type_=motif_sortie_enum,
+                   existing_nullable=True,
+                   postgresql_using="motif_sortie::motif_sortie_enum")
+
+    if "commentaire_motif" in existing_cols:
+        try:
+            op.drop_column('pointage', 'commentaire_motif')
+        except sa.exc.ProgrammingError:
+            pass
     # ### end Alembic commands ###
 
 def downgrade() -> None:

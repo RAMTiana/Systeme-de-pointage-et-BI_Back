@@ -32,14 +32,27 @@ def upgrade() -> None:
     motif_enum = sa.Enum(*MOTIF_VALUES, name="motif_sortie_enum")
     motif_enum.create(op.get_bind(), checkfirst=True)
 
-    op.add_column(
-        "pointage",
-        sa.Column("motif_sortie", motif_enum, nullable=True),
-    )
-    op.add_column(
-        "pointage",
-        sa.Column("commentaire_motif", sa.String(length=255), nullable=True),
-    )
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    existing_cols = [c["name"] for c in insp.get_columns("pointage")] if "pointage" in insp.get_table_names() else []
+
+    if "motif_sortie" not in existing_cols:
+        try:
+            op.add_column(
+                "pointage",
+                sa.Column("motif_sortie", motif_enum, nullable=True),
+            )
+        except sa.exc.ProgrammingError:
+            pass
+
+    if "commentaire_motif" not in existing_cols:
+        try:
+            op.add_column(
+                "pointage",
+                sa.Column("commentaire_motif", sa.String(length=255), nullable=True),
+            )
+        except sa.exc.ProgrammingError:
+            pass
 
     # Rétro-remplissage : toute sortie existante devient "fin_service".
     op.execute(

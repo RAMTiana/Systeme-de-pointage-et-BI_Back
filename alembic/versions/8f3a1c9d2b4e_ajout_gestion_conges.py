@@ -68,26 +68,34 @@ statut_conge_col = postgresql.ENUM(
 def upgrade() -> None:
     type_conge_enum.create(op.get_bind(), checkfirst=True)
     statut_conge_enum.create(op.get_bind(), checkfirst=True)
- 
-    op.create_table(
-        'conge',
-        sa.Column('id_conge', sa.Integer(), nullable=False),
-        sa.Column('id_agent', sa.Integer(), nullable=False),
-        sa.Column('type_conge', type_conge_col, nullable=False),
-        sa.Column('date_debut', sa.Date(), nullable=False),
-        sa.Column('date_fin', sa.Date(), nullable=False),
-        sa.Column('motif', sa.Text(), nullable=True),
-        sa.Column('statut', statut_conge_col, server_default='actif', nullable=False),
-        sa.Column('id_utilisateur_saisie', sa.Integer(), nullable=False),
-        sa.Column('date_creation', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-        sa.CheckConstraint('date_fin >= date_debut', name='ck_conge_dates_coherentes'),
-        sa.ForeignKeyConstraint(['id_agent'], ['agent.id_agent'], ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['id_utilisateur_saisie'], ['utilisateur.id_utilisateur'], ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id_conge'),
-    )
-    op.create_index(op.f('ix_conge_id_agent'), 'conge', ['id_agent'], unique=False)
-    op.create_index(op.f('ix_conge_date_debut'), 'conge', ['date_debut'], unique=False)
-    op.create_index(op.f('ix_conge_date_fin'), 'conge', ['date_fin'], unique=False)
+    # Create the table and indexes only if they don't already exist (idempotent)
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    if not insp.has_table('conge'):
+        op.create_table(
+            'conge',
+            sa.Column('id_conge', sa.Integer(), nullable=False),
+            sa.Column('id_agent', sa.Integer(), nullable=False),
+            sa.Column('type_conge', type_conge_col, nullable=False),
+            sa.Column('date_debut', sa.Date(), nullable=False),
+            sa.Column('date_fin', sa.Date(), nullable=False),
+            sa.Column('motif', sa.Text(), nullable=True),
+            sa.Column('statut', statut_conge_col, server_default='actif', nullable=False),
+            sa.Column('id_utilisateur_saisie', sa.Integer(), nullable=False),
+            sa.Column('date_creation', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+            sa.CheckConstraint('date_fin >= date_debut', name='ck_conge_dates_coherentes'),
+            sa.ForeignKeyConstraint(['id_agent'], ['agent.id_agent'], ondelete='CASCADE'),
+            sa.ForeignKeyConstraint(['id_utilisateur_saisie'], ['utilisateur.id_utilisateur'], ondelete='RESTRICT'),
+            sa.PrimaryKeyConstraint('id_conge'),
+        )
+    # create indexes only if missing
+    existing_indexes = {idx['name'] for idx in insp.get_indexes('conge')} if insp.has_table('conge') else set()
+    if 'ix_conge_id_agent' not in existing_indexes:
+        op.create_index(op.f('ix_conge_id_agent'), 'conge', ['id_agent'], unique=False)
+    if 'ix_conge_date_debut' not in existing_indexes:
+        op.create_index(op.f('ix_conge_date_debut'), 'conge', ['date_debut'], unique=False)
+    if 'ix_conge_date_fin' not in existing_indexes:
+        op.create_index(op.f('ix_conge_date_fin'), 'conge', ['date_fin'], unique=False)
  
  
 def downgrade() -> None:

@@ -33,24 +33,37 @@ statut_absence_enum = sa.Enum(
 
 
 def upgrade() -> None:
-    op.create_table(
-        'absence',
-        sa.Column('id_absence', sa.Integer(), nullable=False),
-        sa.Column('id_agent', sa.Integer(), nullable=False),
-        sa.Column('date_debut', sa.Date(), nullable=False),
-        sa.Column('date_fin', sa.Date(), nullable=False),
-        sa.Column('motif', sa.Text(), nullable=True),
-        sa.Column('statut', statut_absence_enum, server_default='actif', nullable=False),
-        sa.Column('id_utilisateur_saisie', sa.Integer(), nullable=False),
-        sa.Column('date_creation', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-        sa.CheckConstraint('date_fin >= date_debut', name='ck_absence_dates_coherentes'),
-        sa.ForeignKeyConstraint(['id_agent'], ['agent.id_agent'], ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['id_utilisateur_saisie'], ['utilisateur.id_utilisateur'], ondelete='RESTRICT'),
-        sa.PrimaryKeyConstraint('id_absence'),
-    )
-    op.create_index(op.f('ix_absence_id_agent'), 'absence', ['id_agent'], unique=False)
-    op.create_index(op.f('ix_absence_date_debut'), 'absence', ['date_debut'], unique=False)
-    op.create_index(op.f('ix_absence_date_fin'), 'absence', ['date_fin'], unique=False)
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    # create enum type if missing
+    statut_absence_enum.create(bind, checkfirst=True)
+
+    # create table only if it does not exist
+    if not insp.has_table('absence'):
+        op.create_table(
+            'absence',
+            sa.Column('id_absence', sa.Integer(), nullable=False),
+            sa.Column('id_agent', sa.Integer(), nullable=False),
+            sa.Column('date_debut', sa.Date(), nullable=False),
+            sa.Column('date_fin', sa.Date(), nullable=False),
+            sa.Column('motif', sa.Text(), nullable=True),
+            sa.Column('statut', statut_absence_enum, server_default='actif', nullable=False),
+            sa.Column('id_utilisateur_saisie', sa.Integer(), nullable=False),
+            sa.Column('date_creation', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+            sa.CheckConstraint('date_fin >= date_debut', name='ck_absence_dates_coherentes'),
+            sa.ForeignKeyConstraint(['id_agent'], ['agent.id_agent'], ondelete='CASCADE'),
+            sa.ForeignKeyConstraint(['id_utilisateur_saisie'], ['utilisateur.id_utilisateur'], ondelete='RESTRICT'),
+            sa.PrimaryKeyConstraint('id_absence'),
+        )
+
+    # create indexes only if missing
+    existing_indexes = {idx['name'] for idx in insp.get_indexes('absence')} if insp.has_table('absence') else set()
+    if 'ix_absence_id_agent' not in existing_indexes:
+        op.create_index(op.f('ix_absence_id_agent'), 'absence', ['id_agent'], unique=False)
+    if 'ix_absence_date_debut' not in existing_indexes:
+        op.create_index(op.f('ix_absence_date_debut'), 'absence', ['date_debut'], unique=False)
+    if 'ix_absence_date_fin' not in existing_indexes:
+        op.create_index(op.f('ix_absence_date_fin'), 'absence', ['date_fin'], unique=False)
 
 
 def downgrade() -> None:

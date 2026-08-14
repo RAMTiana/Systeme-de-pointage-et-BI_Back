@@ -23,24 +23,32 @@ def upgrade() -> None:
     # classique : on l'exécute dans un bloc autocommit dédié.
     with op.get_context().autocommit_block():
         op.execute("ALTER TYPE mode_pointage_enum ADD VALUE IF NOT EXISTS 'webauthn'")
-
-    op.create_table(
-        'identifiant_webauthn',
-        sa.Column('id_identifiant', sa.Integer(), nullable=False),
-        sa.Column('id_agent', sa.Integer(), nullable=False),
-        sa.Column('credential_id', sa.String(length=512), nullable=False),
-        sa.Column('cle_publique', sa.LargeBinary(), nullable=False),
-        sa.Column('compteur_signature', sa.Integer(), server_default='0', nullable=False),
-        sa.Column('nom_appareil', sa.String(length=150), nullable=True),
-        sa.Column('date_creation', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-        sa.ForeignKeyConstraint(['id_agent'], ['agent.id_agent'], ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('id_identifiant'),
-        sa.UniqueConstraint('id_agent'),
-        sa.UniqueConstraint('credential_id'),
-    )
-    op.create_index(
-        op.f('ix_identifiant_webauthn_credential_id'), 'identifiant_webauthn', ['credential_id'], unique=True
-    )
+    # Make the migration idempotent: only create the table/index if they
+    # don't already exist. This avoids failures on `alembic upgrade head` if
+    # the DB was partially modified manually or by another branch.
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    if not insp.has_table('identifiant_webauthn'):
+        op.create_table(
+            'identifiant_webauthn',
+            sa.Column('id_identifiant', sa.Integer(), nullable=False),
+            sa.Column('id_agent', sa.Integer(), nullable=False),
+            sa.Column('credential_id', sa.String(length=512), nullable=False),
+            sa.Column('cle_publique', sa.LargeBinary(), nullable=False),
+            sa.Column('compteur_signature', sa.Integer(), server_default='0', nullable=False),
+            sa.Column('nom_appareil', sa.String(length=150), nullable=True),
+            sa.Column('date_creation', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+            sa.ForeignKeyConstraint(['id_agent'], ['agent.id_agent'], ondelete='CASCADE'),
+            sa.PrimaryKeyConstraint('id_identifiant'),
+            sa.UniqueConstraint('id_agent'),
+            sa.UniqueConstraint('credential_id'),
+        )
+    # create_index is safe to call unconditionally via CREATE INDEX IF NOT EXISTS
+    # isn't supported by SQLAlchemy op.create_index, so guard with inspector.
+    if not insp.get_indexes('identifiant_webauthn'):
+        op.create_index(
+            op.f('ix_identifiant_webauthn_credential_id'), 'identifiant_webauthn', ['credential_id'], unique=True
+        )
 
 
 def downgrade() -> None:
