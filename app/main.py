@@ -5,6 +5,8 @@ Lancement en local :
     uvicorn app.main:app --reload
 """
 import logging
+import os
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +19,16 @@ from app.core.scheduler import arreter_scheduler, demarrer_scheduler
 from app.core.security_headers import SecurityHeadersMiddleware
 
 logger = logging.getLogger(__name__)
+
+# Assurer que le processus utilise le fuseau horaire configuré (IANA),
+# notamment pour `time.localtime()` et les affichages locaux.
+os.environ.setdefault("TZ", settings.TIMEZONE)
+try:
+    time.tzset()
+except AttributeError:
+    # time.tzset() n'existe pas sur certaines plateformes (ex. Windows);
+    # dans ce cas on se repose sur les bibliothèques timezone-aware.
+    pass
 
 # En production, Swagger/Redoc/openapi.json sont désactivés (surface
 # d'attaque inutile + fuite de la structure interne de l'API). C'était déjà

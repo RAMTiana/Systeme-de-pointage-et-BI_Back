@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     ABSENCE_JOB_ENABLED: bool = True
     ABSENCE_JOB_HOUR: int = 6
     ABSENCE_JOB_MINUTE: int = 0
+    # --- Fuseau horaire par défaut pour l'application (IANA) ---
+    # Exemple pour Madagascar : "Indian/Antananarivo". Peut être
+    # surchargé via la variable d'environnement TIMEZONE.
+    TIMEZONE: str = "Indian/Antananarivo"
 
     @computed_field
     @property
