@@ -16,6 +16,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -25,10 +26,16 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-statut_absence_enum = sa.Enum(
+statut_absence_enum = postgresql.ENUM(
     'actif',
     'annule',
     name='statut_absence',
+)
+statut_absence_col = postgresql.ENUM(
+    'actif',
+    'annule',
+    name='statut_absence',
+    create_type=False,
 )
 
 
@@ -47,7 +54,7 @@ def upgrade() -> None:
             sa.Column('date_debut', sa.Date(), nullable=False),
             sa.Column('date_fin', sa.Date(), nullable=False),
             sa.Column('motif', sa.Text(), nullable=True),
-            sa.Column('statut', statut_absence_enum, server_default='actif', nullable=False),
+            sa.Column('statut', statut_absence_col, server_default='actif', nullable=False),
             sa.Column('id_utilisateur_saisie', sa.Integer(), nullable=False),
             sa.Column('date_creation', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
             sa.CheckConstraint('date_fin >= date_debut', name='ck_absence_dates_coherentes'),
