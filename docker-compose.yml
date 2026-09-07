@@ -1,4 +1,4 @@
-version: "3.9"
+# (removed obsolete `version` header — modern Compose ignores it)
 
 # Infrastructure SRB Haute Matsiatra — configuration de base (développement /
 # staging interne). Ce fichier seul publie des ports directement sur l'hôte ;

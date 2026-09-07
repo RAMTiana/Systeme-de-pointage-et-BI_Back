@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     ABSENCE_JOB_ENABLED: bool = True
     ABSENCE_JOB_HOUR: int = 6
     ABSENCE_JOB_MINUTE: int = 0
+    # Option: exécuter une passe de détection immédiatement au démarrage
+    # Utile en développement ou si le serveur a été arrêté et a manqué la
+    # fenêtre quotidienne — évite des absences non consignées jusqu'au cron.
+    ABSENCE_RUN_ON_STARTUP: bool = False
     # --- Fuseau horaire par défaut pour l'application (IANA) ---
     # Exemple pour Madagascar : "Indian/Antananarivo". Peut être
     # surchargé via la variable d'environnement TIMEZONE.

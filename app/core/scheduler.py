@@ -89,6 +89,16 @@ def demarrer_scheduler() -> None:
         settings.ABSENCE_JOB_HOUR,
         settings.ABSENCE_JOB_MINUTE,
     )
+    # Optionnel : exécuter une passe unique immédiatement au démarrage
+    # pour rattraper les jours manqués (utile en dev/local ou après un
+    # redémarrage du serveur). Contrôlé par la variable
+    # `ABSENCE_RUN_ON_STARTUP` dans la configuration.
+    if getattr(settings, "ABSENCE_RUN_ON_STARTUP", False):
+        logger.info("Exécution initiale de la détection des absences (ABSENCE_RUN_ON_STARTUP=true).")
+        try:
+            _executer_detection_absences()
+        except Exception:
+            logger.exception("Échec de l'exécution initiale de la détection des absences.")
 
 
 def arreter_scheduler() -> None:
