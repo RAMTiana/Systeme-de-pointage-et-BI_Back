@@ -109,3 +109,101 @@ def envoyer_alertes(db: Session, anomalie: Anomalie) -> List[Alerte]:
     for alerte in alertes:
         db.refresh(alerte)
     return alertes
+
+
+def envoyer_alertes_escalade(db: Session, anomalie: Anomalie) -> List[Alerte]:
+    """
+    Envoie une alerte d'escalade (ex. vers les Administrateurs) lorsqu'un
+    cas grave est détecté (trois absences consécutives, etc.). Journalise
+    les tentatives d'envoi comme pour `envoyer_alertes`.
+    """
+    sujet = f"[SRB] Escalade : Absences consécutives — {anomalie.agent.nom} {anomalie.agent.prenom}"
+    corps = (
+        f"L'agent {anomalie.agent.prenom} {anomalie.agent.nom} (matricule {anomalie.agent.matricule}) "
+        f"présente plusieurs absences consécutives détectées par le système, dernière détection le {anomalie.date_detection.strftime('%d/%m/%Y')}.\n"
+        "Merci de vérifier et d'initier les actions nécessaires."
+    )
+
+    alertes: List[Alerte] = []
+    # Destinataires : Administrateurs
+    stmt = (
+        select(Utilisateur.email)
+        .join(Role, Utilisateur.id_role == Role.id_role)
+        .where(Role.nom_role == 'Administrateur', Utilisateur.actif.is_(True))
+    )
+    emails = [e for e in db.execute(stmt).scalars().all()]
+
+    for email in emails:
+        succes = notifications.envoyer_email(email, sujet, corps)
+        alertes.append(
+            Alerte(
+                id_anomalie=anomalie.id_anomalie,
+                canal=CanalAlerte.EMAIL,
+                destinataire=email,
+                statut=StatutAlerte.ENVOYEE if succes else StatutAlerte.ECHEC,
+            )
+        )
+
+    if not alertes:
+        alertes.append(
+            Alerte(
+                id_anomalie=anomalie.id_anomalie,
+                canal=CanalAlerte.EMAIL,
+                destinataire="(aucun administrateur configuré)",
+                statut=StatutAlerte.ECHEC,
+            )
+        )
+
+    db.add_all(alertes)
+    db.commit()
+    for alerte in alertes:
+        db.refresh(alerte)
+    return alertes
+
+
+def envoyer_alertes_escalade_retards(db: Session, anomalie: Anomalie) -> List[Alerte]:
+    """
+    Envoie une alerte d'escalade spécifique pour retards consécutifs.
+    Destinataires : Administrateurs (par défaut).
+    """
+    sujet = f"[SRB] Escalade : Retards consécutifs — {anomalie.agent.nom} {anomalie.agent.prenom}"
+    corps = (
+        f"L'agent {anomalie.agent.prenom} {anomalie.agent.nom} (matricule {anomalie.agent.matricule}) "
+        f"présente plusieurs retards consécutifs détectés par le système, dernière détection le {anomalie.date_detection.strftime('%d/%m/%Y')}.
+Merci de vérifier et d'initier les actions nécessaires."
+    )
+
+    alertes: List[Alerte] = []
+    stmt = (
+        select(Utilisateur.email)
+        .join(Role, Utilisateur.id_role == Role.id_role)
+        .where(Role.nom_role == 'Administrateur', Utilisateur.actif.is_(True))
+    )
+    emails = [e for e in db.execute(stmt).scalars().all()]
+
+    for email in emails:
+        succes = notifications.envoyer_email(email, sujet, corps)
+        alertes.append(
+            Alerte(
+                id_anomalie=anomalie.id_anomalie,
+                canal=CanalAlerte.EMAIL,
+                destinataire=email,
+                statut=StatutAlerte.ENVOYEE if succes else StatutAlerte.ECHEC,
+            )
+        )
+
+    if not alertes:
+        alertes.append(
+            Alerte(
+                id_anomalie=anomalie.id_anomalie,
+                canal=CanalAlerte.EMAIL,
+                destinataire="(aucun administrateur configuré)",
+                statut=StatutAlerte.ECHEC,
+            )
+        )
+
+    db.add_all(alertes)
+    db.commit()
+    for alerte in alertes:
+        db.refresh(alerte)
+    return alertes

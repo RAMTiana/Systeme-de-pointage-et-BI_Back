@@ -145,6 +145,10 @@ PARAMETRES: List[Tuple[str, str, str]] = [
     ("telephone_hierarchie", "",
      "Numéros de téléphone de la hiérarchie pour les alertes SMS, séparés par des "
      "virgules (canal optionnel — laisser vide désactive l'envoi de SMS)"),
+    ("seuil_absences_consecutives", "3",
+     "Nombre d'absences consécutives non justifiées déclenchant une escalation/admin alert"),
+    ("seuil_retards_consecutifs", "3",
+     "Nombre de retards consécutifs non justifiés déclenchant une escalation/admin alert"),
 ]
 
 

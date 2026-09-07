@@ -92,6 +92,39 @@ def _alerte_necessaire(db: Session, anomalie: Anomalie) -> bool:
     return _recidive_atteinte(db, anomalie)
 
 
+def _consecutive_absences_atteinte(db: Session, anomalie: Anomalie, n: int | None = None) -> bool:
+    """
+    Vérifie si l'agent a au moins `n` anomalies d'absence consécutives se terminant
+    par l'anomalie fournie (jours calendaires consécutifs) et non justifiées.
+    Le seuil `n` est récupéré depuis le paramètre système
+    `seuil_absences_consecutives` (par défaut 3).
+    """
+    if n is None:
+        n = parametre_service.get_int(db, "seuil_absences_consecutives", default=3)
+
+    # Récupère les dernières n anomalies d'absence non justifiées pour l'agent
+    stmt = (
+        select(Anomalie)
+        .where(
+            Anomalie.id_agent == anomalie.id_agent,
+            Anomalie.type_anomalie == TypeAnomalie.ABSENCE,
+            Anomalie.statut_justification != StatutJustification.JUSTIFIEE,
+            Anomalie.date_detection <= anomalie.date_detection,
+        )
+        .order_by(Anomalie.date_detection.desc())
+        .limit(n)
+    )
+    rows = list(db.execute(stmt).unique().scalars().all())
+    if len(rows) < n:
+        return False
+
+    # Vérifie que les dates forment une suite consécutive se terminant par anomalie
+    dates = [a.date_detection.date() for a in rows]
+    # rows sont ordonnées du plus récent au moins récent
+    expected = [anomalie.date_detection.date() - timedelta(days=i) for i in range(0, n)]
+    return dates[:n] == expected
+
+
 def qualifier_et_alerter(db: Session, anomalie: Anomalie) -> List[Alerte]:
     """
     Point d'entrée appelé juste après la consignation d'une anomalie en base
@@ -112,6 +145,59 @@ def qualifier_et_alerter(db: Session, anomalie: Anomalie) -> List[Alerte]:
             f"type={anomalie.type_anomalie.value} destinataires={len(alertes)}"
         ),
     )
+    # Si l'anomalie est une absence et que l'agent atteint N absences
+    # consécutives, déclencher une alerte d'escalade vers l'administrateur.
+    try:
+        if anomalie.type_anomalie == TypeAnomalie.ABSENCE and _consecutive_absences_atteinte(db, anomalie):
+            esc_alertes = alerte_service.envoyer_alertes_escalade(db, anomalie)
+            journal_audit_service.log_action(
+                db,
+                id_utilisateur=None,
+                action="escalade_absences_consecutives",
+                details=(
+                    f"anomalie={anomalie.id_anomalie} agent={anomalie.id_agent} "
+                    f"escalation_destinataires={len(esc_alertes)}"
+                ),
+            )
+        # Détection et escalade pour retards consécutifs
+        if anomalie.type_anomalie == TypeAnomalie.RETARD:
+            # on vérifie si le nombre de retards consécutifs atteint le seuil configuré
+            seuil_retards = parametre_service.get_int(db, "seuil_retards_consecutifs", default=3)
+            # Récupère les dernières `seuil_retards` anomalies RETARD non justifiées
+            stmt = (
+                select(Anomalie)
+                .where(
+                    Anomalie.id_agent == anomalie.id_agent,
+                    Anomalie.type_anomalie == TypeAnomalie.RETARD,
+                    Anomalie.statut_justification != StatutJustification.JUSTIFIEE,
+                    Anomalie.date_detection <= anomalie.date_detection,
+                )
+                .order_by(Anomalie.date_detection.desc())
+                .limit(seuil_retards)
+            )
+            rows = list(db.execute(stmt).unique().scalars().all())
+            if len(rows) >= seuil_retards:
+                dates = [a.date_detection.date() for a in rows]
+                expected = [anomalie.date_detection.date() - timedelta(days=i) for i in range(0, seuil_retards)]
+                if dates[:seuil_retards] == expected:
+                    esc_alertes = alerte_service.envoyer_alertes_escalade_retards(db, anomalie)
+                    journal_audit_service.log_action(
+                        db,
+                        id_utilisateur=None,
+                        action="escalade_retards_consecutifs",
+                        details=(
+                            f"anomalie={anomalie.id_anomalie} agent={anomalie.id_agent} "
+                            f"escalation_destinataires={len(esc_alertes)}"
+                        ),
+                    )
+    except Exception:
+        # On ne veut pas empêcher le flux principal en cas d'erreur d'escalade
+        journal_audit_service.log_action(
+            db,
+            id_utilisateur=None,
+            action="escalade_absences_consecutives_failed",
+            details=f"anomalie={anomalie.id_anomalie} agent={anomalie.id_agent}",
+        )
     return alertes
 
 
