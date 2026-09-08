@@ -169,8 +169,9 @@ def envoyer_alertes_escalade_retards(db: Session, anomalie: Anomalie) -> List[Al
     sujet = f"[SRB] Escalade : Retards consécutifs — {anomalie.agent.nom} {anomalie.agent.prenom}"
     corps = (
         f"L'agent {anomalie.agent.prenom} {anomalie.agent.nom} (matricule {anomalie.agent.matricule}) "
-        f"présente plusieurs retards consécutifs détectés par le système, dernière détection le {anomalie.date_detection.strftime('%d/%m/%Y')}.
-Merci de vérifier et d'initier les actions nécessaires."
+        f"présente plusieurs retards consécutifs détectés par le système, dernière détection le "
+        f"{anomalie.date_detection.strftime('%d/%m/%Y')}.\n"
+        "Merci de vérifier et d'initier les actions nécessaires."
     )
 
     alertes: List[Alerte] = []
