@@ -61,7 +61,11 @@ class UtilisateurOut(BaseModel):
     """Profil courant renvoyé par GET /auth/me — jamais de champ sensible (hash, google_id)."""
     id_utilisateur: int
     login: str
-    email: EmailStr
+    # Sortie : utiliser `str` plutôt que `EmailStr` pour éviter des erreurs
+    # de sérialisation lorsque la base contient des adresses réservées
+    # (ex. dev@example.test) — la validation stricte est conservée pour
+    # les entrées (création/modification) via `UtilisateurCreate`/`UtilisateurUpdate`.
+    email: str
     nom_complet: str
     actif: bool
     email_verifie: bool
@@ -139,7 +143,9 @@ class UtilisateurAdminOut(BaseModel):
     """Fiche compte telle que vue par un administrateur — toujours sans champ sensible."""
     id_utilisateur: int
     login: str
-    email: EmailStr
+    # Voir commentaire ci-dessus : email en sortie autorise des valeurs
+    # utilitaires/reservées afin d'éviter un ResponseValidationError.
+    email: str
     nom_complet: str
     actif: bool
     email_verifie: bool
